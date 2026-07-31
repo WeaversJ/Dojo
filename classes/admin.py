@@ -22,7 +22,6 @@ class SessionCoachInline(admin.TabularInline):
     extra = 0
 
 
-
 @admin.register(Class)
 class ClassAdmin(admin.ModelAdmin):
     list_display = ('name', 'organisation', 'schedule_display')
