@@ -4,10 +4,11 @@ services:
     restart: always
     environment:
       MYSQL_DATABASE: ${DB_NAME:-dojo}
+      MYSQL_USER: ${DB_USER:-dojo_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-dojo_password}
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-dojo_root_password}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "3306:3306"
     healthcheck:
