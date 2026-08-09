@@ -211,7 +211,7 @@ class GradingRegisterView(OrgMixin, View):
         from progression.models import MemberProgression, ProgressionStage
 
         grading, session = self._get_grading_session(pk, session_pk)
-        attendance_qs = GradingAttendance.objects.filter(session=session).select_related('member')
+        attendance_qs = GradingAttendance.objects.filter(session=session).select_related('member', 'progression')
         present_ids = {int(x) for x in request.POST.getlist('present')}
 
         promoted = []
