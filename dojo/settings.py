@@ -52,8 +52,10 @@ INSTALLED_APPS = [
     'members',
     'classes',
     'progression',
+    'gradings',
     'billing',
     'documents',
+    'inventory',
     'django_htmx',
     'auditlog',
 ]
