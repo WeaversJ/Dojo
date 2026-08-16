@@ -46,7 +46,7 @@
             {% for cm in enrolled %}
             <tr>
                 <td style="color:#999;">{{ forloop.counter }}</td>
-                <td>{{ cm.member.name }}</td>
+                <td>{{ cm.member.name }}{% if cm.member.photo_consent %} 📷{% endif %}</td>
                 <td style="text-align:center;">
                     <span class="tick-box {% if cm.member.pk in present_ids %}present{% endif %}"></span>
                 </td>

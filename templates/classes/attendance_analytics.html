@@ -1,7 +1,13 @@
 {% extends 'org/base.html' %}
+{% load static %}
 
 {% block title %}Attendance{% endblock %}
 {% block page_title %}Attendance{% endblock %}
+
+{% block extra_head %}
+{{ block.super }}
+<script src="{% static 'vendor/chartjs/chart.umd.min.js' %}"></script>
+{% endblock %}
 
 {% block main_content %}
 
@@ -42,6 +48,33 @@
     </div>
 </div>
 {% endif %}
+
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-header bg-white border-bottom py-3 d-flex flex-wrap gap-2 justify-content-between align-items-center">
+        <h6 class="mb-0">Attendance trend <span class="text-muted fw-normal small">last {{ trend_count }} sessions</span></h6>
+        <form method="get" class="d-flex gap-2 align-items-center">
+            {% if selected_class %}<input type="hidden" name="class" value="{{ selected_class }}">{% endif %}
+            {% if sort %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
+            <select name="trend_class" class="form-select form-select-sm" style="max-width:220px;" onchange="this.form.submit()">
+                {% for cls in classes %}
+                <option value="{{ cls.pk }}" {% if trend_selected_class == cls.pk|stringformat:"s" %}selected{% endif %}>{{ cls.name }}</option>
+                {% endfor %}
+            </select>
+            <select name="trend_count" class="form-select form-select-sm" style="max-width:150px;" onchange="this.form.submit()">
+                <option value="10" {% if trend_count == 10 %}selected{% endif %}>Last 10 sessions</option>
+                <option value="25" {% if trend_count == 25 %}selected{% endif %}>Last 25 sessions</option>
+                <option value="50" {% if trend_count == 50 %}selected{% endif %}>Last 50 sessions</option>
+            </select>
+        </form>
+    </div>
+    <div class="card-body">
+        {% if trend_has_data %}
+        <canvas id="attendanceTrendChart" height="80"></canvas>
+        {% else %}
+        <p class="text-muted small mb-0">No sessions recorded yet for this class.</p>
+        {% endif %}
+    </div>
+</div>
 
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white border-bottom py-3 d-flex flex-wrap gap-2 justify-content-between align-items-center">
@@ -168,4 +201,53 @@
     </div>
 </div>
 
+{% endblock %}
+
+{% block extra_scripts %}
+{% if trend_has_data %}
+<script>
+const trendCtx = document.getElementById('attendanceTrendChart');
+const trendAverage = {{ trend_average }};
+const trendData = {{ trend_data|safe }};
+new Chart(trendCtx, {
+    type: 'line',
+    data: {
+        labels: {{ trend_labels|safe }},
+        datasets: [
+            {
+                label: 'Members present',
+                data: trendData,
+                borderColor: '#212529',
+                backgroundColor: 'rgba(33,37,41,0.08)',
+                tension: 0.3,
+                fill: true,
+                pointRadius: 4,
+                pointBackgroundColor: '#212529',
+            },
+            {
+                label: `Average (${trendAverage})`,
+                data: trendData.map(() => trendAverage),
+                borderColor: '#dc3545',
+                borderDash: [6, 4],
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false,
+            },
+        ],
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: { display: true, position: 'bottom', labels: { boxWidth: 14 } },
+        },
+        scales: {
+            y: {
+                beginAtZero: true,
+                ticks: { precision: 0 },
+            },
+        },
+    },
+});
+</script>
+{% endif %}
 {% endblock %}

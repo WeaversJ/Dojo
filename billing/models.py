@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from organisations.models import Organisation
@@ -182,3 +183,37 @@ class Payment(models.Model):
 
     class Meta:
         ordering = ['-paid_at']
+
+
+class Expense(models.Model):
+    """A club outgoing (rent, equipment, salaries, etc). Tracked separately from
+    billing/invoices so the finance report can show revenue minus expenses = profit,
+    on a monthly basis."""
+
+    class Category(models.TextChoices):
+        RENT = 'rent', 'Rent & venue hire'
+        UTILITIES = 'utilities', 'Utilities'
+        EQUIPMENT = 'equipment', 'Equipment & mats'
+        INSURANCE = 'insurance', 'Insurance'
+        SALARIES = 'salaries', 'Coach pay & salaries'
+        LICENSING = 'licensing', 'Licensing & affiliation fees'
+        MARKETING = 'marketing', 'Marketing'
+        MAINTENANCE = 'maintenance', 'Maintenance & repairs'
+        OTHER = 'other', 'Other'
+
+    organisation = models.ForeignKey(Organisation, on_delete=models.CASCADE, related_name='expenses')
+    description = models.CharField(max_length=255)
+    category = models.CharField(max_length=20, choices=Category.choices, default=Category.OTHER)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    expense_date = models.DateField(default=timezone.localdate)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.description} — £{self.amount} ({self.expense_date})"
+
+    class Meta:
+        ordering = ['-expense_date', '-created_at']
