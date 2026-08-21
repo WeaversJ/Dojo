@@ -1,9 +1,16 @@
 from django.contrib import admin
-from .models import Class, ClassCoach, ClassMember, Session, Attendance, SessionCoach
+from .models import (
+    Class, ClassCoach, ClassHelper, ClassMember, Session, Attendance, SessionCoach, SessionHelper,
+)
 
 
 class ClassCoachInline(admin.TabularInline):
     model = ClassCoach
+    extra = 0
+
+
+class ClassHelperInline(admin.TabularInline):
+    model = ClassHelper
     extra = 0
 
 
@@ -22,12 +29,17 @@ class SessionCoachInline(admin.TabularInline):
     extra = 0
 
 
+class SessionHelperInline(admin.TabularInline):
+    model = SessionHelper
+    extra = 0
+
+
 @admin.register(Class)
 class ClassAdmin(admin.ModelAdmin):
     list_display = ('name', 'organisation', 'schedule_display')
     list_filter = ('organisation',)
     search_fields = ('name', 'organisation__name')
-    inlines = [ClassCoachInline, ClassMemberInline]
+    inlines = [ClassCoachInline, ClassHelperInline, ClassMemberInline]
 
 
 @admin.register(Session)
@@ -35,4 +47,4 @@ class SessionAdmin(admin.ModelAdmin):
     list_display = ('assigned_class', 'date', 'is_cancelled', 'is_extra')
     list_filter = ('assigned_class__organisation', 'assigned_class', 'is_cancelled', 'is_extra')
     date_hierarchy = 'date'
-    inlines = [AttendanceInline, SessionCoachInline]
+    inlines = [AttendanceInline, SessionCoachInline, SessionHelperInline]

@@ -23,15 +23,22 @@
 {% endblock %}
 
 {% block main_content %}
-<div class="row">
+<!-- Standalone quick-add forms, kept outside the register form below since HTML
+     doesn't allow nested <form> elements — their controls live inside the register
+     form's card headers and target these via the form="..." attribute instead. -->
+<form id="add-member-form" method="post" action="{% url 'class_enrol' org_slug=org.slug pk=cls.pk %}"></form>
+<form id="add-coach-form" method="post" action="{% url 'class_coach_add' org_slug=org.slug pk=cls.pk %}"></form>
+<form id="add-helper-form" method="post" action="{% url 'class_helper_add' org_slug=org.slug pk=cls.pk %}"></form>
+
+<form method="post" id="register-form">
+    {% csrf_token %}
+    <div class="row">
     <div class="col-lg-7">
 
         {% if session.is_cancelled %}
         <div class="alert alert-warning">This session is marked as cancelled.</div>
         {% endif %}
 
-        <form method="post">
-            {% csrf_token %}
             <div class="card border-0 shadow-sm mb-3">
                 <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
                     <h6 class="mb-0">Attendance
@@ -40,8 +47,31 @@
                     <div class="d-flex gap-2">
                         <button type="button" class="btn btn-sm btn-outline-secondary" id="mark-all">Mark all present</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary" id="clear-all">Clear all</button>
+                        {% if available_members %}
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#add-member-panel">
+                            <i class="bi bi-person-plus"></i> Add member
+                        </button>
+                        {% endif %}
                     </div>
                 </div>
+
+                {% if available_members %}
+                <div class="collapse" id="add-member-panel">
+                    <div class="card-body border-bottom bg-light">
+                        <div class="d-flex gap-2">
+                            <select name="member_id" form="add-member-form" class="form-select form-select-sm">
+                                {% for m in available_members %}
+                                <option value="{{ m.pk }}">{{ m.name }}</option>
+                                {% endfor %}
+                            </select>
+                            <input type="hidden" name="next" value="register" form="add-member-form">
+                            <input type="hidden" name="session_pk" value="{{ session.pk }}" form="add-member-form">
+                            <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}" form="add-member-form">
+                            <button type="submit" form="add-member-form" class="btn btn-sm btn-dark text-nowrap">Add to class</button>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
 
                 {% if enrolled %}
                 <div class="card-body p-0">
@@ -62,6 +92,11 @@
                                         <label class="form-check-label fw-semibold mb-0" for="m{{ cm.member.pk }}" style="cursor:pointer;">
                                             {{ cm.member.name }}
                                         </label>
+                                        {% if cm.is_former_member %}
+                                        <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle" style="font-size:0.65rem;" title="No longer enrolled in this class — shown because they were marked for this session before leaving">
+                                            No longer enrolled
+                                        </span>
+                                        {% endif %}
                                         {% if cm.member.photo_consent %}
                                         <span title="Photo consent given">📷</span>
                                         {% endif %}
@@ -77,12 +112,13 @@
                                         {% endif %}
                                         {% if cm.member.emergency_contact_phone or cm.member.emergency_contact_2_phone %}
                                         <button type="button"
-                                                class="badge bg-info text-dark border-0 d-flex align-items-center gap-1"
-                                                style="font-size:0.65rem;cursor:pointer;"
+                                                class="btn btn-link p-0 text-danger border-0"
+                                                style="font-size:1rem;line-height:1;cursor:pointer;"
                                                 data-bs-toggle="collapse"
                                                 data-bs-target="#emg{{ cm.member.pk }}"
+                                                title="Emergency contact — click to view"
                                                 onclick="event.stopPropagation()">
-                                            <i class="bi bi-telephone-fill"></i> Emergency contact
+                                            <i class="bi bi-telephone-fill"></i>
                                         </button>
                                         {% endif %}
                                         {% if cm.member.pk in unsigned_waiver_ids %}
@@ -141,17 +177,43 @@
             </div>
             {% endif %}
 
-            {% if coaches %}
             <div class="card border-0 shadow-sm mb-3">
                 <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
                     <h6 class="mb-0">Coaches
                         <span class="text-muted fw-normal small ms-1">{{ coaches|length }} assigned</span>
                     </h6>
                     <div class="d-flex gap-2">
+                        {% if coaches %}
                         <button type="button" class="btn btn-sm btn-outline-secondary" id="coach-mark-all">Mark all present</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary" id="coach-clear-all">Clear all</button>
+                        {% endif %}
+                        {% if available_coaches %}
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#add-coach-panel">
+                            <i class="bi bi-person-plus"></i> Add coach
+                        </button>
+                        {% endif %}
                     </div>
                 </div>
+
+                {% if available_coaches %}
+                <div class="collapse" id="add-coach-panel">
+                    <div class="card-body border-bottom bg-light">
+                        <div class="d-flex gap-2">
+                            <select name="user_id" form="add-coach-form" class="form-select form-select-sm">
+                                {% for om in available_coaches %}
+                                <option value="{{ om.user.pk }}">{{ om.user.get_full_name|default:om.user.username }} ({{ om.get_role_display }})</option>
+                                {% endfor %}
+                            </select>
+                            <input type="hidden" name="next" value="register" form="add-coach-form">
+                            <input type="hidden" name="session_pk" value="{{ session.pk }}" form="add-coach-form">
+                            <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}" form="add-coach-form">
+                            <button type="submit" form="add-coach-form" class="btn btn-sm btn-dark text-nowrap">Add</button>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if coaches %}
                 <div class="alert alert-danger rounded-0 mb-0 py-2 d-none" id="coach-required-warning">
                     At least one coach must be marked present to save the register.
                 </div>
@@ -169,9 +231,47 @@
                                            onclick="event.stopPropagation()">
                                 </td>
                                 <td class="py-3">
-                                    <label class="form-check-label fw-semibold mb-0" for="coach{{ cc.user.pk }}" style="cursor:pointer;">
-                                        {{ cc.user.get_full_name|default:cc.user.username }}
-                                    </label>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <label class="form-check-label fw-semibold mb-0" for="coach{{ cc.user.pk }}" style="cursor:pointer;">
+                                            {{ cc.user.get_full_name|default:cc.user.username }}
+                                        </label>
+                                        {% if cc.emergency_contact_phone or cc.emergency_contact_2_phone %}
+                                        <button type="button"
+                                                class="btn btn-link p-0 text-danger border-0"
+                                                style="font-size:1rem;line-height:1;cursor:pointer;"
+                                                data-bs-toggle="collapse"
+                                                data-bs-target="#cemg{{ cc.user.pk }}"
+                                                title="Emergency contact — click to view"
+                                                onclick="event.stopPropagation()">
+                                            <i class="bi bi-telephone-fill"></i>
+                                        </button>
+                                        {% endif %}
+                                    </div>
+                                    {% if cc.emergency_contact_phone or cc.emergency_contact_2_phone %}
+                                    <div class="collapse mt-2" id="cemg{{ cc.user.pk }}" onclick="event.stopPropagation()">
+                                        <div class="p-2 rounded small" style="background:#e0f2fe;border:1px solid #bae6fd;color:#075985;">
+                                            {% if cc.emergency_contact_name or cc.emergency_contact_phone %}
+                                            <div>
+                                                <i class="bi bi-telephone-fill me-1"></i>{{ cc.emergency_contact_name|default:"Contact 1" }}{% if cc.emergency_contact_phone %}: {{ cc.emergency_contact_phone }}{% endif %}
+                                            </div>
+                                            {% endif %}
+                                            {% if cc.emergency_contact_2_name or cc.emergency_contact_2_phone %}
+                                            <div>
+                                                <i class="bi bi-telephone-fill me-1"></i>{{ cc.emergency_contact_2_name|default:"Contact 2" }}{% if cc.emergency_contact_2_phone %}: {{ cc.emergency_contact_2_phone }}{% endif %}
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                </td>
+                                <td class="text-center py-3" style="width:90px;" onclick="event.stopPropagation()">
+                                    <div class="form-check d-flex flex-column align-items-center gap-1 mb-0">
+                                        <input class="form-check-input leader-radio" type="radio" name="leader"
+                                               value="{{ cc.user.pk }}" id="leader{{ cc.user.pk }}"
+                                               {% if leader_id == cc.user.pk %}checked{% endif %}
+                                               {% if cc.user.pk not in present_coach_ids %}disabled{% endif %}>
+                                        <label class="form-check-label text-muted mb-0" for="leader{{ cc.user.pk }}" style="font-size:0.65rem;cursor:pointer;">Leader</label>
+                                    </div>
                                 </td>
                                 <td class="text-end pe-3 py-3">
                                     <span class="coach-present-badge {% if cc.user.pk in present_coach_ids %}text-success{% else %}text-muted{% endif %} small">
@@ -184,16 +284,113 @@
                     </table>
                     </div>
                 </div>
-            </div>
-            {% endif %}
-
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-header bg-white border-bottom py-3">
-                    <h6 class="mb-0">Session notes <span class="text-muted fw-normal small">(optional)</span></h6>
-                </div>
+                {% else %}
                 <div class="card-body">
-                    <textarea name="notes" class="form-control" rows="3" placeholder="Any notes about this session…">{{ notes|default:session.notes }}</textarea>
+                    <p class="text-muted small mb-0">No coaches assigned.</p>
                 </div>
+                {% endif %}
+            </div>
+
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0">Helpers
+                        <span class="text-muted fw-normal small ms-1">{{ helpers|length }} assigned</span>
+                    </h6>
+                    <div class="d-flex gap-2">
+                        {% if helpers %}
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="helper-mark-all">Mark all present</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="helper-clear-all">Clear all</button>
+                        {% endif %}
+                        {% if available_helpers %}
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#add-helper-panel">
+                            <i class="bi bi-person-plus"></i> Add helper
+                        </button>
+                        {% endif %}
+                    </div>
+                </div>
+
+                {% if available_helpers %}
+                <div class="collapse" id="add-helper-panel">
+                    <div class="card-body border-bottom bg-light">
+                        <div class="d-flex gap-2">
+                            <select name="member_id" form="add-helper-form" class="form-select form-select-sm">
+                                {% for m in available_helpers %}
+                                <option value="{{ m.pk }}">{{ m.name }}</option>
+                                {% endfor %}
+                            </select>
+                            <input type="hidden" name="next" value="register" form="add-helper-form">
+                            <input type="hidden" name="session_pk" value="{{ session.pk }}" form="add-helper-form">
+                            <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}" form="add-helper-form">
+                            <button type="submit" form="add-helper-form" class="btn btn-sm btn-dark text-nowrap">Add</button>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if helpers %}
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                    <table class="table table-hover mb-0 align-middle">
+                        <tbody>
+                            {% for helper in helpers %}
+                            <tr class="cursor-pointer" onclick="toggleHelperCheck(this)">
+                                <td class="ps-3 py-3" style="width:40px;">
+                                    <input class="form-check-input helper-check" type="checkbox"
+                                           name="helper_present" value="{{ helper.member.pk }}"
+                                           id="helper{{ helper.member.pk }}"
+                                           {% if helper.member.pk in present_helper_ids %}checked{% endif %}
+                                           onclick="event.stopPropagation()">
+                                </td>
+                                <td class="py-3">
+                                    <div class="d-flex align-items-center gap-2">
+                                        <label class="form-check-label fw-semibold mb-0" for="helper{{ helper.member.pk }}" style="cursor:pointer;">
+                                            {{ helper.member.name }}
+                                        </label>
+                                        {% if helper.member.emergency_contact_phone or helper.member.emergency_contact_2_phone %}
+                                        <button type="button"
+                                                class="btn btn-link p-0 text-danger border-0"
+                                                style="font-size:1rem;line-height:1;cursor:pointer;"
+                                                data-bs-toggle="collapse"
+                                                data-bs-target="#hemg{{ helper.member.pk }}"
+                                                title="Emergency contact — click to view"
+                                                onclick="event.stopPropagation()">
+                                            <i class="bi bi-telephone-fill"></i>
+                                        </button>
+                                        {% endif %}
+                                    </div>
+                                    {% if helper.member.emergency_contact_phone or helper.member.emergency_contact_2_phone %}
+                                    <div class="collapse mt-2" id="hemg{{ helper.member.pk }}" onclick="event.stopPropagation()">
+                                        <div class="p-2 rounded small" style="background:#e0f2fe;border:1px solid #bae6fd;color:#075985;">
+                                            {% if helper.member.emergency_contact_name or helper.member.emergency_contact_phone %}
+                                            <div>
+                                                <i class="bi bi-telephone-fill me-1"></i>{{ helper.member.emergency_contact_name|default:"Contact 1" }}{% if helper.member.emergency_contact_phone %}: {{ helper.member.emergency_contact_phone }}{% endif %}
+                                            </div>
+                                            {% endif %}
+                                            {% if helper.member.emergency_contact_2_name or helper.member.emergency_contact_2_phone %}
+                                            <div>
+                                                <i class="bi bi-telephone-fill me-1"></i>{{ helper.member.emergency_contact_2_name|default:"Contact 2" }}{% if helper.member.emergency_contact_2_phone %}: {{ helper.member.emergency_contact_2_phone }}{% endif %}
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                </td>
+                                <td class="text-end pe-3 py-3">
+                                    <span class="helper-present-badge {% if helper.member.pk in present_helper_ids %}text-success{% else %}text-muted{% endif %} small">
+                                        {% if helper.member.pk in present_helper_ids %}Present{% else %}Absent{% endif %}
+                                    </span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    </div>
+                </div>
+                {% else %}
+                <div class="card-body">
+                    <p class="text-muted small mb-0">No helpers assigned.</p>
+                </div>
+                {% endif %}
             </div>
 
             <div class="d-flex gap-2 align-items-center">
@@ -202,10 +399,22 @@
                 </button>
                 <span class="text-muted small" id="present-count"></span>
             </div>
-        </form>
 
     </div>
-</div>
+
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom py-3">
+                <h6 class="mb-0">Session notes <span class="text-muted fw-normal small">(optional)</span></h6>
+            </div>
+            <div class="card-body">
+                <textarea name="notes" class="form-control" rows="6" placeholder="Any notes about this session…">{{ notes|default:session.notes }}</textarea>
+            </div>
+        </div>
+    </div>
+
+    </div>
+</form>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -260,16 +469,25 @@ function updateCoachBadge(row, present) {
     badge.className = `coach-present-badge small ${present ? 'text-success' : 'text-muted'}`;
 }
 
+function updateLeaderRadio(row, present) {
+    const radio = row.querySelector('.leader-radio');
+    if (!radio) return;
+    radio.disabled = !present;
+    if (!present) radio.checked = false;
+}
+
 function toggleCoachCheck(row) {
     const cb = row.querySelector('.coach-check');
     cb.checked = !cb.checked;
     updateCoachBadge(row, cb.checked);
+    updateLeaderRadio(row, cb.checked);
     hideCoachWarning();
 }
 
 document.querySelectorAll('.coach-check').forEach(cb => {
     cb.addEventListener('change', () => {
         updateCoachBadge(cb.closest('tr'), cb.checked);
+        updateLeaderRadio(cb.closest('tr'), cb.checked);
         hideCoachWarning();
     });
 });
@@ -280,6 +498,7 @@ if (coachMarkAll) {
         document.querySelectorAll('.coach-check').forEach(cb => {
             cb.checked = true;
             updateCoachBadge(cb.closest('tr'), true);
+            updateLeaderRadio(cb.closest('tr'), true);
         });
         hideCoachWarning();
     });
@@ -291,6 +510,7 @@ if (coachClearAll) {
         document.querySelectorAll('.coach-check').forEach(cb => {
             cb.checked = false;
             updateCoachBadge(cb.closest('tr'), false);
+            updateLeaderRadio(cb.closest('tr'), false);
         });
     });
 }
@@ -300,7 +520,46 @@ function hideCoachWarning() {
     if (warning) warning.classList.add('d-none');
 }
 
-document.querySelector('form').addEventListener('submit', (e) => {
+function updateHelperBadge(row, present) {
+    const badge = row.querySelector('.helper-present-badge');
+    if (!badge) return;
+    badge.textContent = present ? 'Present' : 'Absent';
+    badge.className = `helper-present-badge small ${present ? 'text-success' : 'text-muted'}`;
+}
+
+function toggleHelperCheck(row) {
+    const cb = row.querySelector('.helper-check');
+    cb.checked = !cb.checked;
+    updateHelperBadge(row, cb.checked);
+}
+
+document.querySelectorAll('.helper-check').forEach(cb => {
+    cb.addEventListener('change', () => {
+        updateHelperBadge(cb.closest('tr'), cb.checked);
+    });
+});
+
+const helperMarkAll = document.getElementById('helper-mark-all');
+if (helperMarkAll) {
+    helperMarkAll.addEventListener('click', () => {
+        document.querySelectorAll('.helper-check').forEach(cb => {
+            cb.checked = true;
+            updateHelperBadge(cb.closest('tr'), true);
+        });
+    });
+}
+
+const helperClearAll = document.getElementById('helper-clear-all');
+if (helperClearAll) {
+    helperClearAll.addEventListener('click', () => {
+        document.querySelectorAll('.helper-check').forEach(cb => {
+            cb.checked = false;
+            updateHelperBadge(cb.closest('tr'), false);
+        });
+    });
+}
+
+document.getElementById('register-form').addEventListener('submit', (e) => {
     const coachChecks = document.querySelectorAll('.coach-check');
     if (coachChecks.length && ![...coachChecks].some(cb => cb.checked)) {
         e.preventDefault();

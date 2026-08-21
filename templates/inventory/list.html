@@ -5,9 +5,11 @@
 {% block page_subtitle %}Products, sizes, and stock levels{% endblock %}
 
 {% block page_actions %}
+{% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
 <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addProductModal">
     <i class="bi bi-plus-lg me-1"></i> New product
 </button>
+{% endif %}
 {% endblock %}
 
 {% block main_content %}
@@ -36,6 +38,7 @@
                         <span class="badge bg-secondary">{{ product.get_category_display }}</span>
                         <span class="text-muted small ms-2">{{ product.total_in_stock }} total in stock</span>
                     </div>
+                    {% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
                     <div class="d-flex gap-2">
                         <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#addVariantModal{{ product.pk }}">
                             <i class="bi bi-plus-lg me-1"></i> Add size
@@ -48,6 +51,7 @@
                             <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
                         </form>
                     </div>
+                    {% endif %}
                 </div>
 
                 {% if product.description %}
@@ -81,18 +85,22 @@
                                     {% if variant.is_low_stock %}<span class="badge bg-warning-subtle text-warning ms-1">Low</span>{% endif %}
                                 </td>
                                 <td class="small text-end">
+                                    {% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
                                     <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#adjustStockModal{{ variant.pk }}">
                                         <i class="bi bi-box-seam"></i> Adjust stock
                                     </button>
                                     <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#editVariantModal{{ variant.pk }}">
                                         <i class="bi bi-pencil"></i>
                                     </button>
+                                    {% endif %}
                                 </td>
                                 <td class="small text-end">
+                                    {% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
                                     <form method="post" action="{% url 'variant_delete' org_slug=org.slug pk=variant.pk %}" class="d-inline" onsubmit="return confirm('Delete size &quot;{{ variant.size }}&quot;?')">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
                                     </form>
+                                    {% endif %}
                                 </td>
                             </tr>
                             {% endfor %}
@@ -106,6 +114,7 @@
         </div>
     </div>
 
+    {% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
     <!-- Edit product modal -->
     <div class="modal fade" id="editProductModal{{ product.pk }}" tabindex="-1">
         <div class="modal-dialog">
@@ -275,6 +284,7 @@
         </div>
     </div>
     {% endfor %}
+    {% endif %}
 
     {% empty %}
     <div class="col-12">
@@ -286,6 +296,7 @@
     {% endfor %}
 </div>
 
+{% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
 <!-- Add product modal -->
 <div class="modal fade" id="addProductModal" tabindex="-1">
     <div class="modal-dialog">
@@ -321,5 +332,6 @@
         </div>
     </div>
 </div>
+{% endif %}
 
 {% endblock %}

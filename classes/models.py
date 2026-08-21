@@ -28,6 +28,11 @@ class Class(models.Model):
 
     max_capacity = models.PositiveIntegerField(null=True, blank=True)
     billing_policy = models.ForeignKey('billing.BillingPolicy', null=True, blank=True, on_delete=models.SET_NULL, related_name='classes')
+    default_leader = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='default_led_classes',
+        help_text='The coach who normally runs this whole class series — carried onto newly generated '
+                   'sessions and used on the calendar when a session has no leader of its own set yet.',
+    )
 
     @property
     def enrolled_count(self):
@@ -63,6 +68,24 @@ class ClassCoach(models.Model):
         unique_together = ('assigned_class', 'user')
 
 
+class ClassHelper(models.Model):
+    """
+    An organisation member (not a staff account) who regularly helps out at
+    this class's sessions — e.g. a senior student assisting a junior class.
+    Mirrors ClassCoach, but points at members.Member rather than a User,
+    since helpers aren't staff and don't log in to run sessions themselves.
+    """
+    assigned_class = models.ForeignKey(Class, on_delete=models.CASCADE, related_name='helpers')
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='helping_classes')
+
+    def __str__(self):
+        return f"{self.member} → {self.assigned_class} (helper)"
+
+    class Meta:
+        unique_together = ('assigned_class', 'member')
+        ordering = ['member__name']
+
+
 class ClassMember(models.Model):
     assigned_class = models.ForeignKey(Class, on_delete=models.CASCADE, related_name='enrolments')
     member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='enrolments')
@@ -93,6 +116,10 @@ class Session(models.Model):
     notes = models.TextField(blank=True)
     is_cancelled = models.BooleanField(default=False)
     is_extra = models.BooleanField(default=False)
+    leader = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='led_sessions',
+        help_text='The staff member actually running this session — set from the register.',
+    )
 
     def __str__(self):
         return f"{self.assigned_class} — {self.date}"
@@ -126,3 +153,17 @@ class SessionCoach(models.Model):
     class Meta:
         unique_together = ('session', 'coach')
         ordering = ['coach__first_name', 'coach__last_name']
+
+
+class SessionHelper(models.Model):
+    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='session_helpers')
+    helper = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='helped_sessions')
+    present = models.BooleanField(default=False)
+
+    def __str__(self):
+        status = 'Present' if self.present else 'Absent'
+        return f"{self.helper} — {self.session} — {status}"
+
+    class Meta:
+        unique_together = ('session', 'helper')
+        ordering = ['helper__name']

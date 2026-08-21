@@ -421,9 +421,12 @@ class StaffListView(OrgAdminMixin, View):
             om.coaching_licence_expiry = cl_exp or None
             om.emergency_contact_name = request.POST.get('emergency_contact_name', '').strip()
             om.emergency_contact_phone = request.POST.get('emergency_contact_phone', '').strip()
+            om.emergency_contact_2_name = request.POST.get('emergency_contact_2_name', '').strip()
+            om.emergency_contact_2_phone = request.POST.get('emergency_contact_2_phone', '').strip()
             om.save(update_fields=[
                 'dbs_number', 'dbs_expiry', 'coaching_licence', 'coaching_licence_expiry',
                 'emergency_contact_name', 'emergency_contact_phone',
+                'emergency_contact_2_name', 'emergency_contact_2_phone',
             ])
             messages.success(request, 'Qualifications updated.')
 
@@ -608,16 +611,32 @@ class CustomFieldSettingsView(OrgAdminMixin, View):
         return redirect('org_custom_fields', org_slug=self.org.slug)
 
 
-class AnnouncementListView(OrgAdminMixin, View):
+class AnnouncementListView(OrgMixin, View):
+    """Any org member can view the announcement history. Sending is open to
+    coaches too, but scoped to only the classes they're assigned to — the
+    "all active members" option is admin-only."""
+
+    def _is_admin(self, request):
+        return request.user.is_superuser or (
+            self.org_membership and self.org_membership.role == 'org_admin'
+        )
+
     def get(self, request, org_slug):
         from classes.models import Class
+        is_admin = self._is_admin(request)
         announcements = Announcement.objects.filter(organisation=self.org)
-        classes = Class.objects.filter(organisation=self.org).order_by('name')
+        if is_admin:
+            classes = Class.objects.filter(organisation=self.org).order_by('name')
+        else:
+            classes = Class.objects.filter(
+                organisation=self.org, coaches__user=request.user,
+            ).distinct().order_by('name')
         return render(request, 'org/announcements.html', {
             'org': self.org,
             'org_membership': self.org_membership,
             'announcements': announcements,
             'classes': classes,
+            'is_admin': is_admin,
         })
 
     def post(self, request, org_slug):
@@ -625,6 +644,8 @@ class AnnouncementListView(OrgAdminMixin, View):
         from members.models import Member
         from django.core.mail import EmailMultiAlternatives
         from django.template.loader import render_to_string
+
+        is_admin = self._is_admin(request)
 
         subject = request.POST.get('subject', '').strip()
         body = request.POST.get('body', '').strip()
@@ -635,7 +656,23 @@ class AnnouncementListView(OrgAdminMixin, View):
             messages.error(request, 'Subject and body are required.')
             return redirect('org_announcements', org_slug=self.org.slug)
 
-        if recipient_type == 'class' and class_pk:
+        if not is_admin:
+            # Coaches can only ever send to a class they're assigned to — never "all
+            # active members" — regardless of what the submitted form claims.
+            recipient_type = 'class'
+            if not class_pk:
+                messages.error(request, 'Select a class to send to.')
+                return redirect('org_announcements', org_slug=self.org.slug)
+            cls = Class.objects.filter(
+                pk=class_pk, organisation=self.org, coaches__user=request.user,
+            ).first()
+            if not cls:
+                messages.error(request, "You can only send announcements to classes you're assigned to.")
+                return redirect('org_announcements', org_slug=self.org.slug)
+            member_ids = ClassMember.objects.filter(assigned_class=cls).values_list('member_id', flat=True)
+            members = Member.objects.filter(pk__in=member_ids, is_active=True)
+            label = f'Class: {cls.name}'
+        elif recipient_type == 'class' and class_pk:
             cls = get_object_or_404(Class, pk=class_pk, organisation=self.org)
             member_ids = ClassMember.objects.filter(assigned_class=cls).values_list('member_id', flat=True)
             members = Member.objects.filter(pk__in=member_ids, is_active=True)
@@ -706,7 +743,7 @@ class CalendarEventsView(OrgMixin, View):
         end = request.GET.get('end', '')
         qs = Session.objects.filter(
             assigned_class__organisation=self.org
-        ).select_related('assigned_class')
+        ).select_related('assigned_class', 'leader', 'assigned_class__default_leader')
         if start:
             qs = qs.filter(date__gte=start[:10])
         if end:
@@ -719,12 +756,40 @@ class CalendarEventsView(OrgMixin, View):
             qs = qs.filter(assigned_class__coaches__user=request.user)
 
         from django.urls import reverse
+
+        # A session's own leader wins; falling back to the class's default leader
+        # means sessions show a leader on the calendar even before anyone has
+        # opened that specific session's register yet.
+        sessions = list(qs)
+        effective_leader_ids = {
+            (s.leader_id or s.assigned_class.default_leader_id)
+            for s in sessions
+            if (s.leader_id or s.assigned_class.default_leader_id)
+        }
+        leader_colours = {}
+        if effective_leader_ids:
+            leader_colours = dict(
+                OrganisationMember.objects.filter(
+                    organisation=self.org, user_id__in=effective_leader_ids,
+                ).exclude(calendar_colour='').values_list('user_id', 'calendar_colour')
+            )
+
         events = []
-        for session in qs:
-            color = '#dc3545' if session.is_cancelled else '#212529'
+        for session in sessions:
             title = session.assigned_class.name
+            leader = session.leader or session.assigned_class.default_leader
+            if leader:
+                leader_name = leader.get_full_name() or leader.username
+                title += f' — {leader_name}'
+
             if session.is_cancelled:
+                color = '#dc3545'
                 title += ' (cancelled)'
+            elif leader and leader.pk in leader_colours:
+                color = leader_colours[leader.pk]
+            else:
+                color = '#212529'
+
             events.append({
                 'id': session.pk,
                 'title': title,
@@ -925,6 +990,40 @@ class AccountView(OrgMixin, View):
             holiday = get_object_or_404(StaffHoliday, pk=holiday_pk, member=self.org_membership)
             holiday.delete()
             messages.success(request, 'Holiday removed.')
+            return redirect('account_settings', org_slug=self.org.slug)
+
+        elif action == 'update_emergency_contacts':
+            if not self.org_membership:
+                messages.error(request, "You're not a staff member of this organisation.")
+                return redirect('account_settings', org_slug=self.org.slug)
+
+            # Scoped to self.org_membership — a coach can only ever edit their own record here.
+            self.org_membership.emergency_contact_name = request.POST.get('emergency_contact_name', '').strip()
+            self.org_membership.emergency_contact_phone = request.POST.get('emergency_contact_phone', '').strip()
+            self.org_membership.emergency_contact_2_name = request.POST.get('emergency_contact_2_name', '').strip()
+            self.org_membership.emergency_contact_2_phone = request.POST.get('emergency_contact_2_phone', '').strip()
+            self.org_membership.save(update_fields=[
+                'emergency_contact_name', 'emergency_contact_phone',
+                'emergency_contact_2_name', 'emergency_contact_2_phone',
+            ])
+            messages.success(request, 'Emergency contacts updated.')
+            return redirect('account_settings', org_slug=self.org.slug)
+
+        elif action == 'update_calendar_colour':
+            if not self.org_membership:
+                messages.error(request, "You're not a staff member of this organisation.")
+                return redirect('account_settings', org_slug=self.org.slug)
+
+            import re
+            colour = request.POST.get('calendar_colour', '').strip()
+            if colour and not re.match(r'^#[0-9a-fA-F]{6}$', colour):
+                messages.error(request, 'Enter a valid colour (e.g. #2563EB).')
+                return redirect('account_settings', org_slug=self.org.slug)
+
+            # Scoped to self.org_membership — a coach can only ever set their own colour here.
+            self.org_membership.calendar_colour = colour
+            self.org_membership.save(update_fields=['calendar_colour'])
+            messages.success(request, 'Calendar colour updated.')
             return redirect('account_settings', org_slug=self.org.slug)
 
         user = request.user

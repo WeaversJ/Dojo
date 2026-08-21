@@ -331,6 +331,24 @@
         </li>
     </ul>
 
+    <div class="sidebar-section-label">Inventory</div>
+    <ul class="sidebar-nav">
+        <li>
+            <a href="{% url 'inventory_list' org_slug=org.slug %}" class="{% if 'inventory' in url_name or 'product' in url_name or 'variant' in url_name %}active{% endif %}">
+                <i class="bi bi-box-seam"></i> Inventory
+            </a>
+        </li>
+    </ul>
+
+    <div class="sidebar-section-label">Announcements</div>
+    <ul class="sidebar-nav">
+        <li>
+            <a href="{% url 'org_announcements' org_slug=org.slug %}" class="{% if url_name == 'org_announcements' %}active{% endif %}">
+                <i class="bi bi-megaphone"></i> Announcements
+            </a>
+        </li>
+    </ul>
+
     {% endif %}
     </div><!-- end dojo-sidebar-nav-scroll -->
 

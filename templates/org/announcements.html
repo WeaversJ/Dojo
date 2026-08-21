@@ -12,8 +12,10 @@
                 <h6 class="mb-0">Send announcement</h6>
             </div>
             <div class="card-body">
+                {% if is_admin or classes %}
                 <form method="post">
                     {% csrf_token %}
+                    {% if is_admin %}
                     <div class="mb-3">
                         <label class="form-label small fw-semibold">Recipients</label>
                         <select name="recipient_type" class="form-select form-select-sm" id="recipient-type">
@@ -30,6 +32,19 @@
                             {% endfor %}
                         </select>
                     </div>
+                    {% else %}
+                    <input type="hidden" name="recipient_type" value="class">
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Class</label>
+                        <select name="class_pk" class="form-select form-select-sm" required>
+                            <option value="">— Select class —</option>
+                            {% for cls in classes %}
+                            <option value="{{ cls.pk }}">{{ cls.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">You can only send to classes you coach.</div>
+                    </div>
+                    {% endif %}
                     <div class="mb-3">
                         <label class="form-label small fw-semibold">Subject</label>
                         <input type="text" name="subject" class="form-control form-control-sm" required placeholder="e.g. Training this week">
@@ -43,6 +58,9 @@
                         <i class="bi bi-send me-1"></i> Send announcement
                     </button>
                 </form>
+                {% else %}
+                <p class="text-muted small mb-0">You're not assigned to any classes yet, so there's nothing to send an announcement to.</p>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -91,8 +109,11 @@
 
 {% block extra_scripts %}
 <script>
-document.getElementById('recipient-type').addEventListener('change', function() {
-    document.getElementById('class-picker').classList.toggle('d-none', this.value !== 'class');
-});
+const recipientType = document.getElementById('recipient-type');
+if (recipientType) {
+    recipientType.addEventListener('change', function() {
+        document.getElementById('class-picker').classList.toggle('d-none', this.value !== 'class');
+    });
+}
 </script>
 {% endblock %}

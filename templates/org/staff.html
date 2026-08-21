@@ -136,13 +136,19 @@
                         {% endif %}
                     </td>
                     <td class="py-2 small">
-                        {% if om.emergency_contact_name %}
-                            <div>{{ om.emergency_contact_name }}</div>
+                        {% if om.emergency_contact_name or om.emergency_contact_phone %}
+                            <div>
+                                {{ om.emergency_contact_name|default:"" }}
+                                {% if om.emergency_contact_phone %}<span class="text-muted" style="font-size:0.75rem;">{{ om.emergency_contact_phone }}</span>{% endif %}
+                            </div>
                         {% endif %}
-                        {% if om.emergency_contact_phone %}
-                            <div class="text-muted" style="font-size:0.75rem;">{{ om.emergency_contact_phone }}</div>
+                        {% if om.emergency_contact_2_name or om.emergency_contact_2_phone %}
+                            <div>
+                                {{ om.emergency_contact_2_name|default:"" }}
+                                {% if om.emergency_contact_2_phone %}<span class="text-muted" style="font-size:0.75rem;">{{ om.emergency_contact_2_phone }}</span>{% endif %}
+                            </div>
                         {% endif %}
-                        {% if not om.emergency_contact_name and not om.emergency_contact_phone %}
+                        {% if not om.emergency_contact_name and not om.emergency_contact_phone and not om.emergency_contact_2_name and not om.emergency_contact_2_phone %}
                             <span class="text-muted">—</span>
                         {% endif %}
                     </td>
@@ -190,13 +196,26 @@
                                     <label class="form-label small fw-semibold">Coaching licence expiry</label>
                                     <input type="date" name="coaching_licence_expiry" value="{{ om.coaching_licence_expiry|date:'Y-m-d' }}" class="form-control form-control-sm">
                                 </div>
+                                <div class="col-12 mt-2">
+                                    <div class="small fw-semibold text-muted text-uppercase" style="font-size:0.7rem;letter-spacing:.05em;">
+                                        <i class="bi bi-telephone-fill me-1"></i>Emergency contacts
+                                    </div>
+                                </div>
                                 <div class="col-sm-3">
-                                    <label class="form-label small fw-semibold">Emergency contact name</label>
+                                    <label class="form-label small fw-semibold">Contact 1 — name</label>
                                     <input type="text" name="emergency_contact_name" value="{{ om.emergency_contact_name }}" class="form-control form-control-sm">
                                 </div>
                                 <div class="col-sm-3">
-                                    <label class="form-label small fw-semibold">Emergency contact phone</label>
+                                    <label class="form-label small fw-semibold">Contact 1 — phone</label>
                                     <input type="text" name="emergency_contact_phone" value="{{ om.emergency_contact_phone }}" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-sm-3">
+                                    <label class="form-label small fw-semibold">Contact 2 — name <span class="text-muted fw-normal">(optional)</span></label>
+                                    <input type="text" name="emergency_contact_2_name" value="{{ om.emergency_contact_2_name }}" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-sm-3">
+                                    <label class="form-label small fw-semibold">Contact 2 — phone <span class="text-muted fw-normal">(optional)</span></label>
+                                    <input type="text" name="emergency_contact_2_phone" value="{{ om.emergency_contact_2_phone }}" class="form-control form-control-sm">
                                 </div>
                                 <div class="col-12">
                                     <button type="submit" class="btn btn-sm btn-dark">Save qualifications</button>

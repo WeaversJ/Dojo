@@ -43,6 +43,64 @@
             </div>
         </div>
 
+        {# Emergency contacts #}
+        {% if org_membership %}
+        <div class="card mb-4">
+            <div class="card-header bg-white border-bottom py-3">
+                <h6 class="mb-0"><i class="bi bi-telephone-fill me-1"></i>Emergency contacts</h6>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">Shown to admins and, where relevant, on class registers.</p>
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="update_emergency_contacts">
+                    <div class="row g-3 mb-3">
+                        <div class="col-sm-6">
+                            <label class="form-label small fw-semibold">Contact 1 — name</label>
+                            <input type="text" name="emergency_contact_name" value="{{ org_membership.emergency_contact_name }}" class="form-control">
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label small fw-semibold">Contact 1 — phone</label>
+                            <input type="text" name="emergency_contact_phone" value="{{ org_membership.emergency_contact_phone }}" class="form-control">
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label small fw-semibold">Contact 2 — name <span class="text-muted fw-normal">(optional)</span></label>
+                            <input type="text" name="emergency_contact_2_name" value="{{ org_membership.emergency_contact_2_name }}" class="form-control">
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label small fw-semibold">Contact 2 — phone <span class="text-muted fw-normal">(optional)</span></label>
+                            <input type="text" name="emergency_contact_2_phone" value="{{ org_membership.emergency_contact_2_phone }}" class="form-control">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-dark btn-sm">Save changes</button>
+                </form>
+            </div>
+        </div>
+        {% endif %}
+
+        {# Calendar colour #}
+        {% if org_membership %}
+        <div class="card mb-4">
+            <div class="card-header bg-white border-bottom py-3">
+                <h6 class="mb-0"><i class="bi bi-palette-fill me-1"></i>Calendar colour</h6>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Used on the org calendar for sessions you're leading, so everyone can tell at a glance who's running what.
+                </p>
+                <form method="post" class="d-flex align-items-end gap-3">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="update_calendar_colour">
+                    <div>
+                        <label class="form-label small fw-semibold">Colour</label>
+                        <input type="color" name="calendar_colour" value="{{ org_membership.calendar_colour|default:'#2563eb' }}" class="form-control form-control-color" style="width:3.5rem;height:2.4rem;">
+                    </div>
+                    <button type="submit" class="btn btn-dark btn-sm">Save colour</button>
+                </form>
+            </div>
+        </div>
+        {% endif %}
+
         {# Password #}
         <div class="card mb-4">
             <div class="card-header bg-white border-bottom py-3">

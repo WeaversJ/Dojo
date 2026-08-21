@@ -26,7 +26,14 @@
                     <tbody>
                         {% for session in upcoming %}
                         <tr>
-                            <td class="ps-3 py-3 small fw-semibold">{{ session.date|date:"l d M Y" }}</td>
+                            <td class="ps-3 py-3 small fw-semibold">
+                                {{ session.date|date:"l d M Y" }}
+                                {% if session.leader %}
+                                <div class="text-muted fw-normal" style="font-size:0.75rem;">
+                                    <i class="bi bi-person-check-fill me-1"></i>Leading: {{ session.leader.get_full_name|default:session.leader.username }}
+                                </div>
+                                {% endif %}
+                            </td>
                             <td class="py-3 small text-muted">
                                 {% with count=session.attendance.count %}
                                 {% if count %}{{ count }} marked{% endif %}
@@ -64,7 +71,14 @@
                     <tbody>
                         {% for session in recent %}
                         <tr>
-                            <td class="ps-3 py-2 small text-muted">{{ session.date|date:"l d M Y" }}</td>
+                            <td class="ps-3 py-2 small text-muted">
+                                {{ session.date|date:"l d M Y" }}
+                                {% if session.leader %}
+                                <div style="font-size:0.7rem;">
+                                    <i class="bi bi-person-check-fill me-1"></i>{{ session.leader.get_full_name|default:session.leader.username }}
+                                </div>
+                                {% endif %}
+                            </td>
                             <td class="py-2 small text-muted">
                                 {% with total=session.attendance.count %}
                                 {% if total %}{{ total }} marked{% endif %}
@@ -86,6 +100,44 @@
     </div>
 
     <div class="col-lg-4">
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom py-3">
+                <h6 class="mb-0">Class leader</h6>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    The coach who normally runs this whole class — carried onto new sessions and shown on the calendar.
+                </p>
+                {% if cls.default_leader %}
+                <div class="d-flex align-items-center justify-content-between mb-3">
+                    <span class="badge bg-success-subtle text-success border border-success-subtle">
+                        <i class="bi bi-star-fill me-1"></i>{{ cls.default_leader.get_full_name|default:cls.default_leader.username }}
+                    </span>
+                    <form method="post" action="{% url 'class_set_default_leader' org_slug=org.slug pk=cls.pk %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="next" value="coach_class_detail">
+                        <button type="submit" class="btn btn-link btn-sm p-0 text-muted">Clear</button>
+                    </form>
+                </div>
+                {% else %}
+                <p class="small text-muted mb-3">No default leader set yet.</p>
+                {% endif %}
+                <form method="post" action="{% url 'class_set_default_leader' org_slug=org.slug pk=cls.pk %}" class="d-flex gap-2">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="coach_class_detail">
+                    <select name="default_leader" class="form-select form-select-sm">
+                        <option value="">— Select coach —</option>
+                        {% for coach in coaches %}
+                        <option value="{{ coach.user.pk }}" {% if cls.default_leader_id == coach.user.pk %}selected{% endif %}>
+                            {{ coach.user.get_full_name|default:coach.user.username }}{% if coach.user.pk == request.user.pk %} (you){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="btn btn-dark btn-sm text-nowrap">Set</button>
+                </form>
+            </div>
+        </div>
+
         <div class="card border-0 shadow-sm">
             <div class="card-header bg-white border-bottom py-3">
                 <h6 class="mb-0">Members <span class="text-muted fw-normal">({{ enrolled.count }})</span></h6>

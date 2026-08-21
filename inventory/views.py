@@ -3,12 +3,16 @@ from django.db.models import ProtectedError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 
-from dojo.mixins import OrgAdminMixin
+from dojo.mixins import OrgAdminMixin, OrgMixin
 
 from .models import Product, ProductVariant, StockMovement
 
 
-class ProductListView(OrgAdminMixin, View):
+class ProductListView(OrgMixin, View):
+    """Viewing the catalogue is open to all org staff (read-only for coaches) —
+    every write action below (create/edit/delete product or variant, stock
+    adjustments) stays OrgAdminMixin so nothing can actually be changed by a
+    non-admin, even if they guess a URL."""
     template_name = 'inventory/list.html'
 
     def get(self, request, org_slug):

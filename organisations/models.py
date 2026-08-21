@@ -51,6 +51,12 @@ class OrganisationMember(models.Model):
     coaching_licence_expiry = models.DateField(null=True, blank=True)
     emergency_contact_name = models.CharField(max_length=255, blank=True)
     emergency_contact_phone = models.CharField(max_length=30, blank=True)
+    emergency_contact_2_name = models.CharField(max_length=255, blank=True)
+    emergency_contact_2_phone = models.CharField(max_length=30, blank=True)
+    calendar_colour = models.CharField(
+        max_length=7, blank=True,
+        help_text='Hex colour used for this staff member\'s sessions on the org calendar, e.g. #2563EB.',
+    )
 
     def __str__(self):
         return f"{self.user.get_full_name() or self.user.username} — {self.organisation} ({self.get_role_display()})"
