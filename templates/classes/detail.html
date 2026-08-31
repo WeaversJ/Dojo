@@ -135,6 +135,7 @@
             <div class="card-body border-bottom bg-light">
                 <form method="post" action="{% url 'class_generate_sessions' org_slug=org.slug pk=cls.pk %}" class="d-flex gap-2 align-items-center">
                     {% csrf_token %}
+                    <input type="hidden" name="next" value="class_detail">
                     <span class="small text-muted text-nowrap">Generate next</span>
                     <select name="weeks" class="form-select form-select-sm" style="width: auto;">
                         <option value="5">5 weeks</option>

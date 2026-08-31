@@ -393,12 +393,16 @@ class RemoveFromWaitingListView(OrgAdminMixin, View):
         return redirect('class_detail', org_slug=self.org.slug, pk=cls.pk)
 
 
-class GenerateSessionsView(OrgAdminMixin, View):
+class GenerateSessionsView(ClassCoachMixin, View):
     def post(self, request, org_slug, pk):
-        cls = get_object_or_404(Class, pk=pk, organisation=self.org)
+        cls = self.assigned_class
+
+        # Whitelisted, not passed straight through — POST data shouldn't pick arbitrary URL names.
+        redirect_to = 'class_detail' if request.POST.get('next') == 'class_detail' else 'coach_class_detail'
+
         if not cls.schedule:
             messages.warning(request, 'This class has no schedule set.')
-            return redirect('class_detail', org_slug=self.org.slug, pk=cls.pk)
+            return redirect(redirect_to, org_slug=self.org.slug, pk=cls.pk)
 
         try:
             weeks = max(1, min(int(request.POST.get('weeks', 8)), 52))
@@ -421,7 +425,7 @@ class GenerateSessionsView(OrgAdminMixin, View):
             current += timedelta(days=1)
 
         messages.success(request, f'{created} session{"s" if created != 1 else ""} generated.')
-        return redirect('class_detail', org_slug=self.org.slug, pk=cls.pk)
+        return redirect(redirect_to, org_slug=self.org.slug, pk=cls.pk)
 
 
 class AttendanceRegisterView(ClassCoachMixin, View):

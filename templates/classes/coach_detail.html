@@ -15,11 +15,29 @@
 
     <div class="col-lg-8">
 
-        {% if upcoming %}
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white border-bottom py-3">
                 <h6 class="mb-0">Upcoming sessions</h6>
             </div>
+            <div class="card-body border-bottom bg-light">
+                {% if cls.schedule %}
+                <form method="post" action="{% url 'class_generate_sessions' org_slug=org.slug pk=cls.pk %}" class="d-flex gap-2 align-items-center">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="coach_class_detail">
+                    <span class="small text-muted text-nowrap">Generate next</span>
+                    <select name="weeks" class="form-select form-select-sm" style="width: auto;">
+                        <option value="5">5 weeks</option>
+                        <option value="6" selected>6 weeks</option>
+                        <option value="7">7 weeks</option>
+                    </select>
+                    <button type="submit" class="btn btn-sm btn-dark text-nowrap">Generate</button>
+                </form>
+                {% else %}
+                <p class="text-muted small mb-0">This class has no weekly schedule set, so sessions can't be auto-generated — ask your administrator to set one.</p>
+                {% endif %}
+            </div>
+
+            {% if upcoming %}
             <div class="card-body p-0">
                 <div class="table-responsive">
                 <table class="table table-sm table-hover mb-0 align-middle">
@@ -51,14 +69,12 @@
                 </table>
                 </div>
             </div>
-        </div>
-        {% else %}
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-body text-center py-4 text-muted">
-                <p class="mb-0 small">No upcoming sessions. Ask your administrator to generate sessions for this class.</p>
+            {% else %}
+            <div class="card-body">
+                <p class="text-muted small mb-0">No upcoming sessions yet — use Generate above.</p>
             </div>
+            {% endif %}
         </div>
-        {% endif %}
 
         {% if recent %}
         <div class="card border-0 shadow-sm">

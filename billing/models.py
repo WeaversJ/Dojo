@@ -117,6 +117,11 @@ class Invoice(models.Model):
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.UNPAID)
     notes = models.TextField(blank=True)
     reminder_sent_at = models.DateTimeField(null=True, blank=True)
+    overpayment_credited = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0,
+        help_text="How much of this invoice's overpayment (if any) has already been pulled "
+                   "into a later invoice for the same member as a discount.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -131,6 +136,32 @@ class Invoice(models.Model):
     def items_total(self):
         from decimal import Decimal
         return sum((item.line_total for item in self.items.all()), Decimal('0'))
+
+    @property
+    def amount_paid(self):
+        from decimal import Decimal
+        from django.db.models import Sum
+        return self.payments.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+
+    @property
+    def is_partial(self):
+        """Some money has come in, but not enough to cover the invoice yet."""
+        paid = self.amount_paid
+        return 0 < paid < self.amount
+
+    @property
+    def overpaid_amount(self):
+        """How much more than the invoice total has been paid in, if any."""
+        from decimal import Decimal
+        overpaid = self.amount_paid - self.amount
+        return overpaid if overpaid > 0 else Decimal('0')
+
+    @property
+    def available_credit(self):
+        """Overpayment on this invoice that hasn't yet been pulled into a later invoice."""
+        from decimal import Decimal
+        remaining = self.overpaid_amount - self.overpayment_credited
+        return remaining if remaining > 0 else Decimal('0')
 
     class Meta:
         ordering = ['-created_at']
@@ -217,3 +248,65 @@ class Expense(models.Model):
 
     class Meta:
         ordering = ['-expense_date', '-created_at']
+
+
+def apply_member_credit(invoice):
+    """
+    Pulls any unspent overpayment credit sitting on the member's earlier
+    invoices into this newly-created one, oldest first: reduces the amount
+    owed (recorded as an extra discount) and marks that much of the credit
+    as spent on its source invoice(s) so it isn't offered again later.
+
+    Called right after an invoice is created, from every place that creates
+    one (single/bulk manual invoices, the automated billing run, and the
+    member-list bulk action), so an overpayment always follows the member
+    onto their next bill rather than just sitting unused.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    # `invoice.amount`/`discount_amount` may still be a plain str/float/int here — a
+    # freshly-created instance doesn't get its DecimalFields normalised to Decimal
+    # until it's reloaded from the database, and callers pass amount in as all sorts
+    # of types (Decimal, float, raw form strings). Normalise before doing any math.
+    def _as_decimal(value):
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return Decimal('0')
+
+    remaining_needed = _as_decimal(invoice.amount)
+    invoice.amount = remaining_needed
+    if remaining_needed <= 0:
+        return
+
+    credit_sources = (
+        Invoice.objects.filter(member_id=invoice.member_id, organisation_id=invoice.organisation_id)
+        .exclude(pk=invoice.pk)
+        .order_by('due_date', 'created_at')
+    )
+
+    applied_total = Decimal('0')
+    for source in credit_sources:
+        if remaining_needed <= 0:
+            break
+        available = source.available_credit
+        if available <= 0:
+            continue
+        take = min(available, remaining_needed)
+        source.overpayment_credited += take
+        source.save(update_fields=['overpayment_credited'])
+        applied_total += take
+        remaining_needed -= take
+
+    if applied_total <= 0:
+        return
+
+    invoice.discount_amount = _as_decimal(invoice.discount_amount) + applied_total
+    invoice.amount -= applied_total
+    credit_note = f'Includes £{applied_total:.2f} credit applied from a previous overpayment.'
+    invoice.notes = f'{invoice.notes}\n{credit_note}' if invoice.notes else credit_note
+    update_fields = ['discount_amount', 'amount', 'notes']
+    if invoice.amount <= 0:
+        invoice.status = Invoice.Status.PAID
+        update_fields.append('status')
+    invoice.save(update_fields=update_fields)

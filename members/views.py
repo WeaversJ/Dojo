@@ -108,7 +108,7 @@ class MemberBulkActionView(OrgAdminMixin, View):
             return redirect('member_list', org_slug=org_slug)
 
         if action == 'invoice_create':
-            from billing.models import Invoice
+            from billing.models import Invoice, apply_member_credit
             from datetime import date
             period = request.POST.get('period', '').strip()
             amount_raw = request.POST.get('amount', '').strip()
@@ -128,6 +128,7 @@ class MemberBulkActionView(OrgAdminMixin, View):
                     organisation=self.org, member=member,
                     amount=amount, period=period, due_date=due_date,
                 )
+                apply_member_credit(inv)
                 created.append(inv)
             if send_emails and created:
                 from billing.emails import send_invoice_email
@@ -203,6 +204,10 @@ class MemberDetailView(OrgAdminMixin, DetailView):
         context = super().get_context_data(**kwargs)
         context['guardians'] = self.object.guardians.all()
         context['invoices'] = self.object.invoices.order_by('-created_at')[:5]
+        from decimal import Decimal
+        context['overpaid_credit'] = sum(
+            (inv.available_credit for inv in self.object.invoices.all()), Decimal('0')
+        )
         from classes.models import Attendance, ClassMember
         context['enrolments'] = (
             ClassMember.objects.filter(member=self.object)

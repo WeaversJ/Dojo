@@ -12,7 +12,10 @@ from dojo.mixins import OrgAdminMixin, OrgMixin
 from members.models import Member
 from inventory.models import Product, ProductVariant, StockMovement
 
-from .models import Invoice, InvoiceItem, Payment, BillingPolicy, OrgTerm, PolicyDiscount, MemberDiscount, Expense
+from .models import (
+    Invoice, InvoiceItem, Payment, BillingPolicy, OrgTerm, PolicyDiscount, MemberDiscount, Expense,
+    apply_member_credit,
+)
 
 
 class InsufficientStockError(Exception):
@@ -32,7 +35,8 @@ class InvoiceListView(OrgMixin,ListView):
         qs = (
             Invoice.objects.filter(organisation=self.org)
             .select_related('member')
-            .order_by('-created_at')
+            .annotate(paid_total=Sum('payments__amount'))
+            .order_by('-due_date', 'member__name')
         )
         status = self.request.GET.get('status', '')
         if status in ('unpaid', 'paid', 'overdue'):
@@ -197,6 +201,7 @@ class InvoiceCreateView(OrgMixin,View):
                     due_date=due_date,
                     notes=notes,
                 )
+                apply_member_credit(invoice)
                 for variant, quantity in item_rows:
                     locked = locked_variants[variant.pk]
                     InvoiceItem.objects.create(
@@ -217,14 +222,16 @@ class InvoiceCreateView(OrgMixin,View):
                 # Remaining selected members (only reachable when there are no product items,
                 # since 'all' + products is rejected above) each get their own plain invoice.
                 for member in selected_members[1:]:
-                    created_invoices.append(Invoice.objects.create(
+                    extra_invoice = Invoice.objects.create(
                         organisation=self.org,
                         member=member,
                         amount=base_amount,
                         period=period,
                         due_date=due_date,
                         notes=notes,
-                    ))
+                    )
+                    apply_member_credit(extra_invoice)
+                    created_invoices.append(extra_invoice)
         except InsufficientStockError as e:
             for msg in e.errors:
                 messages.error(request, msg)
@@ -570,6 +577,7 @@ class BulkInvoiceView(OrgMixin,View):
                 period=period_label,
                 due_date=due_date,
             )
+            apply_member_credit(inv)
             created_invoices.append(inv)
 
         messages.success(

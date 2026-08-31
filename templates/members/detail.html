@@ -401,6 +401,11 @@
                     {% elif member.subscription_status == 'cancelled' %}
                     <span class="badge bg-secondary-subtle text-secondary">Autopay cancelled</span>
                     {% endif %}
+                    {% if overpaid_credit %}
+                    <span class="badge bg-info-subtle text-info border border-info-subtle" title="Will be applied as a discount on their next invoice">
+                        Overpaid £{{ overpaid_credit|floatformat:2 }}
+                    </span>
+                    {% endif %}
                 </div>
                 <a href="{% url 'invoice_list' org_slug=org.slug %}?q={{ member.name|urlencode }}" class="btn btn-sm btn-outline-secondary">View all</a>
             </div>
