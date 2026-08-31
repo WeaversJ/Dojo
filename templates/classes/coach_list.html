@@ -21,6 +21,31 @@
                 </p>
                 {% endif %}
                 {% endwith %}
+
+                {% if cls.default_leader_id == request.user.pk %}
+                <div class="mb-3">
+                    <span class="badge bg-success-subtle text-success border border-success-subtle">
+                        <i class="bi bi-star-fill me-1"></i>Your class
+                    </span>
+                    <form method="post" action="{% url 'class_set_default_leader' org_slug=org.slug pk=cls.pk %}" class="d-inline">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-link btn-sm p-0 ms-2 text-muted" style="font-size:0.75rem;">Release</button>
+                    </form>
+                </div>
+                {% elif cls.default_leader %}
+                <p class="small text-muted mb-3">
+                    <i class="bi bi-person-check-fill me-1"></i>Run by {{ cls.default_leader.get_full_name|default:cls.default_leader.username }}
+                </p>
+                {% else %}
+                <form method="post" action="{% url 'class_set_default_leader' org_slug=org.slug pk=cls.pk %}" class="mb-3">
+                    {% csrf_token %}
+                    <input type="hidden" name="default_leader" value="{{ request.user.pk }}">
+                    <button type="submit" class="btn btn-outline-secondary btn-sm">
+                        <i class="bi bi-star me-1"></i> Claim as mine
+                    </button>
+                </form>
+                {% endif %}
+
                 <a href="{% url 'coach_class_detail' org_slug=org.slug pk=cls.pk %}" class="btn btn-dark btn-sm">
                     View class <i class="bi bi-arrow-right ms-1"></i>
                 </a>

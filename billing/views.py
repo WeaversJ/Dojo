@@ -1,18 +1,32 @@
+from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timezone
 
 from django.contrib import messages
+from django.db import transaction
 from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 from django.views.generic import DetailView, ListView
 
-from dojo.mixins import OrgAdminMixin
+from dojo.mixins import OrgAdminMixin, OrgMixin
 from members.models import Member
+from inventory.models import Product, ProductVariant, StockMovement
 
-from .models import Invoice, Payment, BillingPolicy, OrgTerm, PolicyDiscount, MemberDiscount
+from .models import (
+    Invoice, InvoiceItem, Payment, BillingPolicy, OrgTerm, PolicyDiscount, MemberDiscount, Expense,
+    apply_member_credit,
+)
 
 
-class InvoiceListView(OrgAdminMixin, ListView):
+class InsufficientStockError(Exception):
+    """Raised inside an invoice-creation transaction to abort it and roll back any writes
+    made so far when one or more product line items can't be fully stocked."""
+    def __init__(self, errors):
+        self.errors = errors
+        super().__init__('; '.join(errors))
+
+
+class InvoiceListView(OrgMixin,ListView):
     template_name = 'billing/list.html'
     context_object_name = 'invoices'
     paginate_by = 50
@@ -21,7 +35,8 @@ class InvoiceListView(OrgAdminMixin, ListView):
         qs = (
             Invoice.objects.filter(organisation=self.org)
             .select_related('member')
-            .order_by('-created_at')
+            .annotate(paid_total=Sum('payments__amount'))
+            .order_by('-due_date', 'member__name')
         )
         status = self.request.GET.get('status', '')
         if status in ('unpaid', 'paid', 'overdue'):
@@ -43,20 +58,59 @@ class InvoiceListView(OrgAdminMixin, ListView):
         return context
 
 
-class InvoiceCreateView(OrgAdminMixin, View):
-    def get(self, request, org_slug):
+class InvoiceCreateView(OrgMixin,View):
+    def _products_context(self):
+        products = (
+            Product.objects.filter(organisation=self.org, is_active=True)
+            .prefetch_related('variants')
+            .order_by('name')
+        )
+        return products
+
+    def _render_form(self, request, **extra):
         members = Member.objects.filter(organisation=self.org, is_active=True).order_by('name')
-        return render(request, 'billing/create.html', {
+        context = {
             'org': self.org,
             'org_membership': self.org_membership,
             'members': members,
             'today': date.today().isoformat(),
             'payment_methods': Payment.Method.choices,
-        })
+            'products': self._products_context(),
+        }
+        context.update(extra)
+        return render(request, 'billing/create.html', context)
+
+    def get(self, request, org_slug):
+        return self._render_form(request)
+
+    def _parse_items(self, request, errors):
+        """Read the product-line-item rows from POST. Returns a list of (ProductVariant, quantity)."""
+        variant_ids = request.POST.getlist('item_variant_id')
+        quantities = request.POST.getlist('item_quantity')
+        item_rows = []
+        for variant_id_raw, quantity_raw in zip(variant_ids, quantities):
+            variant_id_raw = variant_id_raw.strip()
+            quantity_raw = quantity_raw.strip()
+            if not variant_id_raw:
+                continue
+            try:
+                quantity = int(quantity_raw)
+            except ValueError:
+                errors.append('Product quantities must be whole numbers.')
+                continue
+            if quantity <= 0:
+                continue
+            try:
+                variant = ProductVariant.objects.select_related('product').get(
+                    pk=variant_id_raw, product__organisation=self.org,
+                )
+            except ProductVariant.DoesNotExist:
+                errors.append('One of the selected products could not be found.')
+                continue
+            item_rows.append((variant, quantity))
+        return item_rows
 
     def post(self, request, org_slug):
-        members = Member.objects.filter(organisation=self.org, is_active=True).order_by('name')
-
         target = request.POST.get('target', 'one')
         member_ids = request.POST.getlist('member_ids') if target == 'all' else [request.POST.get('member_id')]
         amount = request.POST.get('amount', '').strip()
@@ -65,54 +119,131 @@ class InvoiceCreateView(OrgAdminMixin, View):
         notes = request.POST.get('notes', '').strip()
 
         errors = []
-        if not amount:
-            errors.append('Amount is required.')
+        item_rows = self._parse_items(request, errors)
+
+        if not amount and not item_rows:
+            errors.append('Enter an amount, add at least one product, or both.')
         if not period:
             errors.append('Period is required.')
         if not due_date_raw:
             errors.append('Due date is required.')
         if not member_ids or not any(member_ids):
             errors.append('Select at least one member.')
+        if item_rows and target == 'all':
+            errors.append(
+                'Product line items can only be added when invoicing a single specific member — '
+                'switch to "Specific member" or create separate invoices for product sales.'
+            )
+
+        try:
+            base_amount = Decimal(amount) if amount else Decimal('0')
+            if base_amount < 0:
+                errors.append('Amount can\'t be negative.')
+        except (InvalidOperation, ValueError):
+            errors.append('Invalid amount.')
+            base_amount = Decimal('0')
 
         if errors:
             for e in errors:
                 messages.error(request, e)
-            return render(request, 'billing/create.html', {
-                'org': self.org,
-                'org_membership': self.org_membership,
-                'members': members,
-                'today': date.today().isoformat(),
-                'payment_methods': Payment.Method.choices,
-            })
+            return self._render_form(request)
 
         try:
             due_date = date.fromisoformat(due_date_raw)
         except ValueError:
             messages.error(request, 'Invalid due date.')
-            return redirect('invoice_create', org_slug=self.org.slug)
+            return self._render_form(request)
 
         if target == 'all':
-            selected_members = Member.objects.filter(organisation=self.org, is_active=True)
+            selected_members = list(Member.objects.filter(organisation=self.org, is_active=True))
         else:
-            selected_members = Member.objects.filter(pk__in=[m for m in member_ids if m], organisation=self.org)
-
-        created = 0
-        for member in selected_members:
-            Invoice.objects.create(
-                organisation=self.org,
-                member=member,
-                amount=amount,
-                period=period,
-                due_date=due_date,
-                notes=notes,
+            selected_members = list(
+                Member.objects.filter(pk__in=[m for m in member_ids if m], organisation=self.org)
             )
-            created += 1
 
+        if not selected_members:
+            messages.error(request, 'No matching members found.')
+            return self._render_form(request)
+
+        try:
+            with transaction.atomic():
+                # Lock every distinct variant involved, in a stable order, so two concurrent
+                # invoices can't both read the same stock level and both succeed when only
+                # one has enough stock.
+                variant_ids = sorted({variant.pk for variant, _ in item_rows})
+                locked_variants = {
+                    v.pk: v for v in ProductVariant.objects.select_for_update().filter(pk__in=variant_ids)
+                }
+
+                stock_errors = []
+                for variant, quantity in item_rows:
+                    locked = locked_variants[variant.pk]
+                    if quantity > locked.quantity_in_stock:
+                        stock_errors.append(
+                            f'Not enough stock for {locked.product.name} ({locked.size}): '
+                            f'requested {quantity}, only {locked.quantity_in_stock} available.'
+                        )
+                if stock_errors:
+                    raise InsufficientStockError(stock_errors)
+
+                # Use the freshly-locked price (not the value read before locking) so the
+                # invoice total always matches the sum of its line items exactly.
+                items_total = sum(
+                    (locked_variants[variant.pk].price * quantity for variant, quantity in item_rows),
+                    Decimal('0'),
+                )
+
+                invoice = Invoice.objects.create(
+                    organisation=self.org,
+                    member=selected_members[0],
+                    amount=base_amount + items_total,
+                    period=period,
+                    due_date=due_date,
+                    notes=notes,
+                )
+                apply_member_credit(invoice)
+                for variant, quantity in item_rows:
+                    locked = locked_variants[variant.pk]
+                    InvoiceItem.objects.create(
+                        invoice=invoice,
+                        variant=locked,
+                        quantity=quantity,
+                        unit_price=locked.price,
+                    )
+                    locked.adjust_stock(
+                        -quantity,
+                        reason=StockMovement.Reason.SALE,
+                        invoice=invoice,
+                        notes=f'Sold on invoice #{invoice.pk}',
+                        user=request.user,
+                    )
+                created_invoices = [invoice]
+
+                # Remaining selected members (only reachable when there are no product items,
+                # since 'all' + products is rejected above) each get their own plain invoice.
+                for member in selected_members[1:]:
+                    extra_invoice = Invoice.objects.create(
+                        organisation=self.org,
+                        member=member,
+                        amount=base_amount,
+                        period=period,
+                        due_date=due_date,
+                        notes=notes,
+                    )
+                    apply_member_credit(extra_invoice)
+                    created_invoices.append(extra_invoice)
+        except InsufficientStockError as e:
+            for msg in e.errors:
+                messages.error(request, msg)
+            messages.error(request, 'No invoice was created — fix the stock issue above and try again.')
+            return self._render_form(request)
+
+        created = len(created_invoices)
         messages.success(request, f'{created} invoice{"s" if created != 1 else ""} created.')
         return redirect('invoice_list', org_slug=self.org.slug)
 
 
-class InvoiceDetailView(OrgAdminMixin, DetailView):
+class InvoiceDetailView(OrgMixin,DetailView):
     template_name = 'billing/detail.html'
     context_object_name = 'invoice'
 
@@ -127,7 +258,7 @@ class InvoiceDetailView(OrgAdminMixin, DetailView):
         return context
 
 
-class MarkPaidView(OrgAdminMixin, View):
+class MarkPaidView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
         invoice.status = Invoice.Status.PAID
@@ -136,7 +267,7 @@ class MarkPaidView(OrgAdminMixin, View):
         return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
 
 
-class MarkUnpaidView(OrgAdminMixin, View):
+class MarkUnpaidView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
         invoice.status = Invoice.Status.UNPAID
@@ -145,7 +276,7 @@ class MarkUnpaidView(OrgAdminMixin, View):
         return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
 
 
-class RecordPaymentView(OrgAdminMixin, View):
+class RecordPaymentView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
         amount_raw = request.POST.get('amount', '').strip()
@@ -181,7 +312,7 @@ class RecordPaymentView(OrgAdminMixin, View):
         return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
 
 
-class BillingExportView(OrgAdminMixin, View):
+class BillingExportView(OrgMixin,View):
     def get(self, request, org_slug):
         import csv
         from django.http import HttpResponse
@@ -209,7 +340,7 @@ class BillingExportView(OrgAdminMixin, View):
         return response
 
 
-class ChaseOverdueView(OrgAdminMixin, View):
+class ChaseOverdueView(OrgMixin,View):
     def post(self, request, org_slug):
         from .emails import send_invoice_email
         overdue = [
@@ -236,7 +367,7 @@ class ChaseOverdueView(OrgAdminMixin, View):
         return redirect('invoice_list', org_slug=self.org.slug)
 
 
-class BulkInvoiceView(OrgAdminMixin, View):
+class BulkInvoiceView(OrgMixin,View):
     template_name = 'billing/bulk_invoice.html'
 
     def _default_due_date(self):
@@ -446,6 +577,7 @@ class BulkInvoiceView(OrgAdminMixin, View):
                 period=period_label,
                 due_date=due_date,
             )
+            apply_member_credit(inv)
             created_invoices.append(inv)
 
         messages.success(
@@ -470,7 +602,7 @@ class BulkInvoiceView(OrgAdminMixin, View):
         return redirect('invoice_list', org_slug=self.org.slug)
 
 
-class SendInvoiceEmailView(OrgAdminMixin, View):
+class SendInvoiceEmailView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
         from .emails import send_invoice_email
@@ -485,7 +617,7 @@ class SendInvoiceEmailView(OrgAdminMixin, View):
         return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
 
 
-class SendReminderEmailView(OrgAdminMixin, View):
+class SendReminderEmailView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
         from .emails import send_reminder_email
@@ -502,7 +634,7 @@ class SendReminderEmailView(OrgAdminMixin, View):
 
 # ── Billing Policies ──────────────────────────────────────────────────────────
 
-class BillingPolicyListView(OrgAdminMixin, View):
+class BillingPolicyListView(OrgMixin,View):
     template_name = 'billing/policies.html'
 
     def get(self, request, org_slug):
@@ -516,7 +648,7 @@ class BillingPolicyListView(OrgAdminMixin, View):
         })
 
 
-class BillingPolicyCreateView(OrgAdminMixin, View):
+class BillingPolicyCreateView(OrgMixin,View):
     def post(self, request, org_slug):
         name = request.POST.get('name', '').strip()
         billing_cycle = request.POST.get('billing_cycle', '').strip()
@@ -544,7 +676,7 @@ class BillingPolicyCreateView(OrgAdminMixin, View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class BillingPolicyEditView(OrgAdminMixin, View):
+class BillingPolicyEditView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         policy = get_object_or_404(BillingPolicy, pk=pk, organisation=self.org)
         policy.name = request.POST.get('name', policy.name).strip()
@@ -561,7 +693,7 @@ class BillingPolicyEditView(OrgAdminMixin, View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class BillingPolicyDeleteView(OrgAdminMixin, View):
+class BillingPolicyDeleteView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         policy = get_object_or_404(BillingPolicy, pk=pk, organisation=self.org)
         name = policy.name
@@ -570,7 +702,7 @@ class BillingPolicyDeleteView(OrgAdminMixin, View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class PolicyDiscountCreateView(OrgAdminMixin, View):
+class PolicyDiscountCreateView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         policy = get_object_or_404(BillingPolicy, pk=pk, organisation=self.org)
         name = request.POST.get('name', '').strip()
@@ -599,7 +731,7 @@ class PolicyDiscountCreateView(OrgAdminMixin, View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class PolicyDiscountDeleteView(OrgAdminMixin, View):
+class PolicyDiscountDeleteView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         discount = get_object_or_404(PolicyDiscount, pk=pk, policy__organisation=self.org)
         name = discount.name
@@ -610,7 +742,7 @@ class PolicyDiscountDeleteView(OrgAdminMixin, View):
 
 # ── Org Terms ─────────────────────────────────────────────────────────────────
 
-class OrgTermCreateView(OrgAdminMixin, View):
+class OrgTermCreateView(OrgMixin,View):
     def post(self, request, org_slug):
         name = request.POST.get('name', '').strip()
         start_date_raw = request.POST.get('start_date', '').strip()
@@ -637,7 +769,7 @@ class OrgTermCreateView(OrgAdminMixin, View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class OrgTermDeleteView(OrgAdminMixin, View):
+class OrgTermDeleteView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         term = get_object_or_404(OrgTerm, pk=pk, organisation=self.org)
         name = term.name
@@ -648,7 +780,7 @@ class OrgTermDeleteView(OrgAdminMixin, View):
 
 # ── Member Discounts ──────────────────────────────────────────────────────────
 
-class MemberDiscountAddView(OrgAdminMixin, View):
+class MemberDiscountAddView(OrgMixin,View):
     def post(self, request, org_slug, member_pk):
         from members.models import Member as MemberModel
         member = get_object_or_404(MemberModel, pk=member_pk, organisation=self.org)
@@ -659,7 +791,7 @@ class MemberDiscountAddView(OrgAdminMixin, View):
         return redirect('member_detail', org_slug=self.org.slug, pk=member_pk)
 
 
-class MemberDiscountRemoveView(OrgAdminMixin, View):
+class MemberDiscountRemoveView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         md = get_object_or_404(MemberDiscount, pk=pk, member__organisation=self.org)
         member_pk = md.member_id
@@ -667,3 +799,119 @@ class MemberDiscountRemoveView(OrgAdminMixin, View):
         md.delete()
         messages.success(request, f'Discount "{name}" removed.')
         return redirect('member_detail', org_slug=self.org.slug, pk=member_pk)
+
+
+# ── Expenses ──────────────────────────────────────────────────────────────────
+# Kept admin-only (unlike the rest of billing) since expenses directly drive the
+# profit figure on the finance report — not part of the "open billing up to
+# coaches" request.
+
+class ExpenseListView(OrgAdminMixin, ListView):
+    template_name = 'billing/expenses.html'
+    context_object_name = 'expenses'
+    paginate_by = 50
+
+    def get_queryset(self):
+        qs = Expense.objects.filter(organisation=self.org).order_by('-expense_date', '-created_at')
+        category = self.request.GET.get('category', '')
+        if category:
+            qs = qs.filter(category=category)
+        return qs
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        today = date.today()
+        base = Expense.objects.filter(organisation=self.org)
+        context['category_filter'] = self.request.GET.get('category', '')
+        context['categories'] = Expense.Category.choices
+        context['total_this_month'] = base.filter(
+            expense_date__year=today.year, expense_date__month=today.month
+        ).aggregate(t=Sum('amount'))['t'] or 0
+        context['total_this_year'] = base.filter(expense_date__year=today.year).aggregate(t=Sum('amount'))['t'] or 0
+        context['today'] = today
+        return context
+
+
+class ExpenseCreateView(OrgAdminMixin, View):
+    def post(self, request, org_slug):
+        description = request.POST.get('description', '').strip()
+        category = request.POST.get('category', Expense.Category.OTHER)
+        amount = request.POST.get('amount', '').strip()
+        expense_date_raw = request.POST.get('expense_date', '').strip()
+        notes = request.POST.get('notes', '').strip()
+
+        if not description or not amount or not expense_date_raw:
+            messages.error(request, 'Description, amount, and date are required.')
+            return redirect('expense_list', org_slug=self.org.slug)
+
+        try:
+            amount_val = Decimal(amount)
+            if amount_val <= 0:
+                raise InvalidOperation
+        except (InvalidOperation, ValueError):
+            messages.error(request, 'Invalid amount — must be a positive number.')
+            return redirect('expense_list', org_slug=self.org.slug)
+
+        try:
+            expense_date = date.fromisoformat(expense_date_raw)
+        except ValueError:
+            messages.error(request, 'Invalid date.')
+            return redirect('expense_list', org_slug=self.org.slug)
+
+        Expense.objects.create(
+            organisation=self.org,
+            description=description,
+            category=category,
+            amount=amount_val,
+            expense_date=expense_date,
+            notes=notes,
+            created_by=request.user,
+        )
+        messages.success(request, f'Expense "{description}" added.')
+        return redirect('expense_list', org_slug=self.org.slug)
+
+
+class ExpenseEditView(OrgAdminMixin, View):
+    def post(self, request, org_slug, pk):
+        expense = get_object_or_404(Expense, pk=pk, organisation=self.org)
+        description = request.POST.get('description', '').strip()
+        category = request.POST.get('category', expense.category)
+        amount = request.POST.get('amount', '').strip()
+        expense_date_raw = request.POST.get('expense_date', '').strip()
+        notes = request.POST.get('notes', '').strip()
+
+        if not description or not amount or not expense_date_raw:
+            messages.error(request, 'Description, amount, and date are required.')
+            return redirect('expense_list', org_slug=self.org.slug)
+
+        try:
+            amount_val = Decimal(amount)
+            if amount_val <= 0:
+                raise InvalidOperation
+        except (InvalidOperation, ValueError):
+            messages.error(request, 'Invalid amount — must be a positive number.')
+            return redirect('expense_list', org_slug=self.org.slug)
+
+        try:
+            expense_date = date.fromisoformat(expense_date_raw)
+        except ValueError:
+            messages.error(request, 'Invalid date.')
+            return redirect('expense_list', org_slug=self.org.slug)
+
+        expense.description = description
+        expense.category = category
+        expense.amount = amount_val
+        expense.expense_date = expense_date
+        expense.notes = notes
+        expense.save()
+        messages.success(request, 'Expense updated.')
+        return redirect('expense_list', org_slug=self.org.slug)
+
+
+class ExpenseDeleteView(OrgAdminMixin, View):
+    def post(self, request, org_slug, pk):
+        expense = get_object_or_404(Expense, pk=pk, organisation=self.org)
+        desc = expense.description
+        expense.delete()
+        messages.success(request, f'Expense "{desc}" deleted.')
+        return redirect('expense_list', org_slug=self.org.slug)

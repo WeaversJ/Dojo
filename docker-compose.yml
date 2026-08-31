@@ -17,7 +17,6 @@ services:
 
   web:
     build: .
-    command: python manage.py runserver 0.0.0.0:8000 --insecure
     volumes:
       - .:/app
     ports:
@@ -32,6 +31,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    command: python manage.py runserver 0.0.0.0:8000 --insecure
 
   stripe:
     image: stripe/stripe-cli:latest

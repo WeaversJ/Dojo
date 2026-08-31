@@ -67,8 +67,12 @@
                         <tr>
                             <td class="ps-3 py-2">
                                 <a href="{% url 'member_detail' org_slug=org.slug pk=member.pk %}" class="text-decoration-none fw-semibold">{{ member.name }}</a>
+                                {% if member.photo_consent %}
+                                <span title="Photo consent given">📷</span>
+                                {% endif %}
                             </td>
-                            <td class="text-muted small py-2">{{ member.email|default:"" }}</td>
+                            <td class="text-muted small py-2">{{ member.emergency_contact_phone|default:"" }}</td>
+                            <td class="text-muted small py-2">{{ member.emergency_contact_2_phone|default:"" }}</td>
                             <td class="text-end pe-3 py-2">
                                 <form method="post" action="{% url 'class_unenrol' org_slug=org.slug pk=cls.pk member_pk=member.pk %}" class="d-inline">
                                     {% csrf_token %}
@@ -131,12 +135,12 @@
             <div class="card-body border-bottom bg-light">
                 <form method="post" action="{% url 'class_generate_sessions' org_slug=org.slug pk=cls.pk %}" class="d-flex gap-2 align-items-center">
                     {% csrf_token %}
+                    <input type="hidden" name="next" value="class_detail">
                     <span class="small text-muted text-nowrap">Generate next</span>
                     <select name="weeks" class="form-select form-select-sm" style="width: auto;">
-                        <option value="4">4 weeks</option>
-                        <option value="8" selected>8 weeks</option>
-                        <option value="12">12 weeks</option>
-                        <option value="26">26 weeks</option>
+                        <option value="5">5 weeks</option>
+                        <option value="6" selected>6 weeks</option>
+                        <option value="7">7 weeks</option>
                     </select>
                     <button type="submit" class="btn btn-sm btn-dark text-nowrap">Generate</button>
                 </form>
@@ -158,10 +162,15 @@
                                 {% elif session.is_extra %}
                                 <span class="badge bg-warning-subtle text-warning ms-1" style="font-size:0.6rem;">Extra</span>
                                 {% endif %}
+                                {% if session.leader %}
+                                <div class="text-muted" style="font-size:0.7rem;">
+                                    <i class="bi bi-person-check-fill me-1"></i>Leader: {{ session.leader.get_full_name|default:session.leader.username }}
+                                </div>
+                                {% endif %}
                             </td>
                             <td class="text-muted small py-2 text-end pe-3">
                                 <div class="d-flex align-items-center justify-content-end gap-2">
-                                    {% with count=session.attendance.count coach_count=session.session_coaches.count %}
+                                    {% with count=session.present_count coach_count=session.session_coaches.count %}
                                     {% if count %}<span>{{ count }} recorded</span>{% endif %}
                                     {% if coach_count %}<span title="Coaches recorded"><i class="bi bi-person-badge"></i> {{ coach_count }}</span>{% endif %}
                                     {% endwith %}
@@ -234,7 +243,14 @@
                     <tbody>
                         {% for coach in coaches %}
                         <tr>
-                            <td class="ps-3 py-2 small fw-semibold">{{ coach.user.get_full_name|default:coach.user.username }}</td>
+                            <td class="ps-3 py-2 small fw-semibold">
+                                {{ coach.user.get_full_name|default:coach.user.username }}
+                                {% if cls.default_leader_id == coach.user.pk %}
+                                <span class="badge bg-success-subtle text-success border border-success-subtle ms-1" style="font-size:0.65rem;">
+                                    <i class="bi bi-star-fill"></i> Default leader
+                                </span>
+                                {% endif %}
+                            </td>
                             <td class="text-end pe-3 py-2">
                                 <form method="post" action="{% url 'class_coach_remove' org_slug=org.slug pk=cls.pk coach_pk=coach.pk %}" class="d-inline">
                                     {% csrf_token %}
@@ -247,9 +263,84 @@
                 </table>
                 </div>
             </div>
+            <div class="card-body border-top bg-light py-3">
+                <label class="form-label small fw-semibold mb-1">Default leader for this class</label>
+                <div class="d-flex gap-2">
+                    <form method="post" action="{% url 'class_set_default_leader' org_slug=org.slug pk=cls.pk %}" class="d-flex gap-2 flex-grow-1">
+                        {% csrf_token %}
+                        <input type="hidden" name="next" value="class_detail">
+                        <select name="default_leader" class="form-select form-select-sm">
+                            <option value="">— None —</option>
+                            {% for coach in coaches %}
+                            <option value="{{ coach.user.pk }}" {% if cls.default_leader_id == coach.user.pk %}selected{% endif %}>
+                                {{ coach.user.get_full_name|default:coach.user.username }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit" class="btn btn-outline-secondary btn-sm text-nowrap">Save</button>
+                    </form>
+                </div>
+                <div class="form-text">Carried onto newly generated sessions and used on the calendar when a session has no leader of its own.</div>
+            </div>
             {% else %}
             <div class="card-body">
                 <p class="text-muted small mb-0">No coaches assigned.</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">Helpers</h6>
+                {% if available_helpers %}
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#add-helper-form">
+                    <i class="bi bi-person-plus me-1"></i> Add helper
+                </button>
+                {% endif %}
+            </div>
+            <div class="card-body border-bottom bg-light py-2">
+                <p class="text-muted small mb-0">Members of the organisation who help out at this class's sessions — e.g. a senior student assisting.</p>
+            </div>
+
+            {% if available_helpers %}
+            <div class="collapse" id="add-helper-form">
+                <div class="card-body border-bottom bg-light">
+                    <form method="post" action="{% url 'class_helper_add' org_slug=org.slug pk=cls.pk %}" class="d-flex gap-2">
+                        {% csrf_token %}
+                        <select name="member_id" class="form-select form-select-sm">
+                            {% for m in available_helpers %}
+                            <option value="{{ m.pk }}">{{ m.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit" class="btn btn-sm btn-dark text-nowrap">Add</button>
+                    </form>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if helpers %}
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <tbody>
+                        {% for helper in helpers %}
+                        <tr>
+                            <td class="ps-3 py-2 small fw-semibold">{{ helper.member.name }}</td>
+                            <td class="text-end pe-3 py-2">
+                                <form method="post" action="{% url 'class_helper_remove' org_slug=org.slug pk=cls.pk helper_pk=helper.pk %}" class="d-inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                </div>
+            </div>
+            {% else %}
+            <div class="card-body">
+                <p class="text-muted small mb-0">No helpers assigned.</p>
             </div>
             {% endif %}
         </div>

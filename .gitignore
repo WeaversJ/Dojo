@@ -41,3 +41,12 @@ claude *
 # graphify
 graphify-out/
 GRAPH_REPORT.md
+
+# Local data imports (may contain member PII / medical info)
+Members.csv
+Classes.csv
+Sessions.csv
+Registers.csv
+CoachAttendance.csv
+Invoices.csv
+Expenses.csv

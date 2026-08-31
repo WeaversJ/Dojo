@@ -357,6 +357,33 @@
         </div>
 
         <div class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-white border-bottom py-3">
+                <h6 class="mb-0">Recent attendance</h6>
+            </div>
+            {% if recent_attended %}
+            <div class="card-body p-0">
+                <ul class="list-group list-group-flush">
+                    {% for a in recent_attended %}
+                    <li class="list-group-item py-2 px-3 d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="small fw-semibold">{{ a.session.assigned_class.name }}</div>
+                            <div class="small text-muted">{{ a.session.date|date:"D d M Y" }}</div>
+                        </div>
+                        <a href="{% url 'session_register' org_slug=org.slug pk=a.session.assigned_class.pk session_pk=a.session.pk %}" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:0.7rem;">
+                            View
+                        </a>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% else %}
+            <div class="card-body">
+                <p class="text-muted small mb-0">No attendance recorded yet.</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="card border-0 shadow-sm mb-3">
             <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
                 <div class="d-flex align-items-center gap-2">
                     <h6 class="mb-0">Billing</h6>
@@ -373,6 +400,11 @@
                     <span class="badge bg-danger-subtle text-danger">Autopay failed</span>
                     {% elif member.subscription_status == 'cancelled' %}
                     <span class="badge bg-secondary-subtle text-secondary">Autopay cancelled</span>
+                    {% endif %}
+                    {% if overpaid_credit %}
+                    <span class="badge bg-info-subtle text-info border border-info-subtle" title="Will be applied as a discount on their next invoice">
+                        Overpaid £{{ overpaid_credit|floatformat:2 }}
+                    </span>
                     {% endif %}
                 </div>
                 <a href="{% url 'invoice_list' org_slug=org.slug %}?q={{ member.name|urlencode }}" class="btn btn-sm btn-outline-secondary">View all</a>
