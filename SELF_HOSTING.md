@@ -83,7 +83,7 @@ You have two options:
 sudo bash deploy/mail/setup-mail-relay.sh dojo.yourclub.co.uk
 ```
 
-The domain you pass is what mail comes from (`noreply@dojo.yourclub.co.uk`). The subdomain Dojo is already served on is a good choice: it keeps your main domain's email reputation separate while the new server builds its own, and the script reuses it as the server's mail hostname. The script prints the DNS records to add (A, PTR, SPF, DKIM, DMARC) and the `.env` settings. Until port 25 is open, mail queues on the server (`mailq`) and delivers automatically once it's unblocked. After the DNS changes have propagated, send a test to the address [mail-tester.com](https://www.mail-tester.com) gives you:
+The domain you pass is what mail comes from (`noreply@dojo.yourclub.co.uk`). The subdomain Dojo is already served on is a good choice: it keeps your main domain's email reputation separate while the new server builds its own, and the script reuses it as the server's mail hostname. Run it with Dojo already up: it only trusts the Docker networks that exist at the time. If Dojo's network is ever recreated on a different subnet, the test email will fail with "Access denied" until you re-run the script. The script prints the DNS records to add (A, PTR, SPF, DKIM, DMARC) and the `.env` settings. Until port 25 is open, mail queues on the server (`mailq`) and delivers automatically once it's unblocked. After the DNS changes have propagated, get a test address from [mail-tester.com](https://www.mail-tester.com) and send an email to it:
 
 ```bash
 docker compose exec web python manage.py sendtestemail test-xxxxx@srv1.mail-tester.com

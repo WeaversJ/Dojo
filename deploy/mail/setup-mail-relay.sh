@@ -18,8 +18,12 @@
 #                  otherwise mail.<domain>)  must match the server IP's PTR record
 #   DKIM_SELECTOR  (default dojo)
 #   DKIM_BITS      (default 2048; use 1024 if your DNS host rejects long TXT records)
-#   TRUSTED_NETWORKS  (default: Docker's 172.16.0.0/12 pool plus every existing
-#                  Docker bridge subnet)  space-separated CIDRs allowed to relay
+#   TRUSTED_NETWORKS  (default: every existing Docker bridge subnet)
+#                  space-separated CIDRs allowed to relay
+#
+# Run it with Dojo already up, so its Docker network exists. If that network
+# is ever recreated on a different subnet, Postfix will reject Dojo's mail
+# until you re-run this script.
 #
 # Safe to re-run: the DKIM key is only generated once, so records already
 # published in DNS stay valid.
@@ -46,13 +50,12 @@ DKIM_SELECTOR="${DKIM_SELECTOR:-dojo}"
 DKIM_BITS="${DKIM_BITS:-2048}"
 KEY_DIR="/etc/opendkim/keys/$DOMAIN"
 
-# Networks allowed to relay (and get DKIM-signed): Docker's default address
-# pool plus every existing Docker bridge subnet. The pool is trusted as a
-# whole because Compose gives a network a new subnet when it's recreated.
+# Networks allowed to relay (and get DKIM-signed): only the Docker bridge
+# subnets that actually exist, never a whole private range.
 if [[ -n "${TRUSTED_NETWORKS:-}" ]]; then
     DOCKER_SUBNETS="$TRUSTED_NETWORKS"
 else
-    DOCKER_SUBNETS="172.16.0.0/12"
+    DOCKER_SUBNETS=""
     if command -v docker >/dev/null; then
         for net in $(docker network ls -q --filter driver=bridge); do
             for subnet in $(docker network inspect "$net" -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}'); do
@@ -61,7 +64,14 @@ else
             done
         done
     fi
+    DOCKER_SUBNETS="${DOCKER_SUBNETS# }"
+    if [[ -z "$DOCKER_SUBNETS" ]]; then
+        echo "No Docker bridge networks found. Start Dojo first (docker compose up -d)," >&2
+        echo "or set TRUSTED_NETWORKS to the subnets allowed to relay." >&2
+        exit 1
+    fi
 fi
+echo "==> Networks allowed to relay: $DOCKER_SUBNETS"
 
 echo "==> Installing Postfix and OpenDKIM"
 debconf-set-selections <<EOF
@@ -71,9 +81,8 @@ EOF
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q postfix opendkim opendkim-tools python3-minimal >/dev/null
 echo "$MAIL_HOSTNAME" > /etc/mailname
 
-# Trusting those networks is only safe while Docker is the only thing on them:
-# replies to any other address in them route into Docker, so a connection from
-# one can't complete. A non-Docker interface in the same range would break that.
+# Trusting those networks is only safe while Docker is the only thing on them.
+# A non-Docker interface in the same range could relay through Postfix.
 OVERLAPS="$(ip -4 -o addr show | awk '$2 !~ /^(lo|docker0|br-|veth)/ {print $2, $4}' | python3 -c '
 import ipaddress, sys
 trusted = [ipaddress.ip_network(n, strict=False) for n in sys.argv[1:]]
