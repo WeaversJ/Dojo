@@ -3,6 +3,8 @@ from django.template.loader import render_to_string
 from django.conf import settings
 from django.urls import reverse
 
+from dojo.email import org_sender
+
 
 def send_welcome_email(member):
     """Send a welcome email to the member (or their guardian if no member email). Returns (success, recipient_or_error)."""
@@ -43,8 +45,8 @@ def send_welcome_email(member):
     msg = EmailMultiAlternatives(
         subject=subject,
         body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
         to=[recipient],
+        **org_sender(member.organisation),
     )
     msg.attach_alternative(html_body, 'text/html')
     msg.send()
@@ -90,8 +92,8 @@ def send_portal_link_refreshed_email(member):
     msg = EmailMultiAlternatives(
         subject=subject,
         body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
         to=[recipient],
+        **org_sender(member.organisation),
     )
     msg.attach_alternative(html_body, 'text/html')
     msg.send()

@@ -55,7 +55,7 @@ Nothing here is required for a basic instance — everything has a sane default.
 | `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_ROOT_PASSWORD` | `dojo` / `dojo_user` / `dojo_password` / `dojo_root_password` | Change these for anything beyond local/trusted use |
 | `ALLOWED_HOSTS` | `*` (all hosts accepted) | Comma-separated list, e.g. `dojo.yourclub.com`. Tightening this is optional today — the codebase notes a browser-configurable allow-list is planned to replace setting it via the environment |
 | `SITE_URL` | `http://localhost:8000` | Used to build links in emails and Stripe redirects. **Also controls security headers** — see below |
-| `EMAIL_*` | console backend | Leave unset to print outgoing mail to `docker compose logs -f web` instead of sending it. Set `EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend` plus the `EMAIL_HOST*` vars for real delivery |
+| `EMAIL_*` | console backend | Leave unset to print outgoing mail to `docker compose logs -f web` instead of sending it. Set `EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend` plus the `EMAIL_HOST*` vars for real delivery — see [Sending email](#sending-email) |
 | `STRIPE_PUBLIC_KEY` / `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | unset | Only needed if you want online payments; get these from your Stripe dashboard |
 | `DOJO_LICENCE_KEY` / `DOJO_LICENCE_HOLDER` | unset | Self-hosters on the default AGPL-3.0 licence leave both blank |
 
@@ -66,6 +66,32 @@ Secure cookies, CSRF, HSTS, and the HTTPS redirect are all keyed off whether `SI
 ### Static files and `DEBUG`
 
 Leave `DEBUG=True` for now. With it on, Django serves `/static/` (Bootstrap, HTMX, the app's own CSS/JS — all vendored locally, no CDN calls) itself via the dev server. There's no `STATIC_ROOT`/`collectstatic` step wired into the Docker image yet, so setting `DEBUG=False` currently means static assets stop being served. This is a known gap, not something to work around per-instance — track/pick up [DojoUK/Dojo#26](https://github.com/DojoUK/Dojo/issues/26) or file a new issue if you want to help close it. In the meantime, `DEBUG=True` + an `https://` `SITE_URL` still gets you the full set of security headers above; you're not choosing between "secure" and "static files work."
+
+---
+
+## Sending email
+
+Every email Dojo sends goes out **from** `DEFAULT_FROM_EMAIL`'s address, shown under your organisation's name (e.g. `Your Club <noreply@yourclub.example>`). Replies go to the contact email set in **Organisation settings**, so set that to an inbox someone actually reads. Dojo never sends *as* that inbox: sending as a Hotmail/Gmail address from your server fails DMARC, and the mail gets junked or rejected.
+
+You have two options:
+
+**An SMTP provider** (e.g. your email host's SMTP server): set `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, and either `EMAIL_USE_TLS=True` (port 587) or `EMAIL_USE_SSL=True` (port 465). They're mutually exclusive: setting `EMAIL_USE_SSL=True` turns the TLS default off, but don't set both to `True`. `DEFAULT_FROM_EMAIL` has to be an address the provider lets you send from.
+
+**Your own server**, sending mail directly: `deploy/mail/setup-mail-relay.sh` installs a send-only Postfix relay with DKIM signing on the Docker host. It accepts mail only from localhost and Docker networks. Your server provider must allow outbound port 25 (many block it by default), and you need to be able to set the server IP's reverse DNS (PTR).
+
+```bash
+sudo bash deploy/mail/setup-mail-relay.sh dojo.yourclub.co.uk
+```
+
+The domain you pass is what mail comes from (`noreply@dojo.yourclub.co.uk`). The subdomain Dojo is already served on is a good choice: it keeps your main domain's email reputation separate while the new server builds its own, and the script reuses it as the server's mail hostname. The script prints the DNS records to add (A, PTR, SPF, DKIM, DMARC) and the `.env` settings. Until port 25 is open, mail queues on the server (`mailq`) and delivers automatically once it's unblocked. After the DNS changes have propagated, send a test to the address [mail-tester.com](https://www.mail-tester.com) gives you:
+
+```bash
+docker compose exec web python manage.py sendtestemail test-xxxxx@srv1.mail-tester.com
+```
+
+**Organisation settings → Send test email** sends one to your own account's email address. If you're sending on a new IP address, expect some mail to land in junk folders at first.
+
+Postfix logs are in `journalctl -u postfix` (or `/var/log/mail.log`).
 
 ---
 
@@ -138,4 +164,4 @@ Two things to back up:
 
 - **Stuck on "waiting for database"** — `entrypoint.sh` retries for up to 60 seconds. If it still times out, check `docker compose logs db` for a MySQL startup failure (bad `DB_ROOT_PASSWORD` on an existing volume is a common cause after changing `.env`).
 - **Redirected to `/setup/` after you already set up an organisation** — this only happens when no `Organisation` row exists in the database. If you're seeing it unexpectedly, confirm you're pointed at the same `mysql_data` volume you set up against originally.
-- **Emails not arriving** — by default `EMAIL_BACKEND` is the console backend, which prints emails to `docker compose logs -f web` instead of sending them. Configure the SMTP variables to send for real.
+- **Emails not arriving** — by default `EMAIL_BACKEND` is the console backend, which prints emails to `docker compose logs -f web` instead of sending them. Configure the SMTP variables to send for real (see [Sending email](#sending-email)). If mail sends from Dojo but never arrives, check the relay or provider's logs — Dojo only knows it handed the message over.

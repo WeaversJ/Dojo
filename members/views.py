@@ -2,6 +2,7 @@ from django.contrib import messages
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 from django.views.generic import CreateView, DetailView, ListView, UpdateView
+from dojo.email import org_sender
 from dojo.mixins import OrgAdminMixin
 from .forms import GuardianFormSet, MemberForm, build_custom_field_widgets, extract_custom_field_values
 from .models import Member
@@ -81,7 +82,6 @@ class MemberBulkActionView(OrgAdminMixin, View):
             return redirect('member_list', org_slug=org_slug)
 
         if action == 'email_send':
-            from django.conf import settings
             from django.core.mail import EmailMultiAlternatives
             subject = request.POST.get('subject', '').strip()
             body = request.POST.get('body', '').strip()
@@ -94,8 +94,8 @@ class MemberBulkActionView(OrgAdminMixin, View):
                 if recipient:
                     try:
                         EmailMultiAlternatives(
-                            subject=subject, body=body,
-                            from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient],
+                            subject=subject, body=body, to=[recipient],
+                            **org_sender(self.org),
                         ).send()
                         sent += 1
                     except Exception:

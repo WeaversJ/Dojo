@@ -142,7 +142,13 @@ EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
-EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_USE_SSL = os.environ.get('EMAIL_USE_SSL', 'False') == 'True'
+# STARTTLS and implicit TLS are mutually exclusive; turning SSL on turns the
+# STARTTLS default off.
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'False' if EMAIL_USE_SSL else 'True') == 'True'
+# Without a timeout, an unreachable mail server hangs the request that sends
+# the email until the worker is killed.
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', 10))
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'Dojo <noreply@example.com>')
 
 # Stripe — set these in .env when you have your Stripe account

@@ -6,6 +6,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 from django.views.generic import DetailView, ListView
 
+from dojo.email import org_sender
 from dojo.mixins import ClassCoachMixin, OrgAdminMixin, OrgMixin
 from members.models import Member
 
@@ -350,7 +351,6 @@ class UnenrolMemberView(OrgAdminMixin, View):
 
 
     def _notify_waitlist_promoted(self, request, member, cls):
-        from django.conf import settings
         from django.core.mail import EmailMultiAlternatives
         has_guardians = member.guardians.exists()
         if has_guardians:
@@ -378,8 +378,8 @@ class UnenrolMemberView(OrgAdminMixin, View):
         )
         try:
             EmailMultiAlternatives(
-                subject=subject, body=body,
-                from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient],
+                subject=subject, body=body, to=[recipient],
+                **org_sender(self.org),
             ).send()
         except Exception:
             pass
@@ -823,8 +823,8 @@ class CancelSessionView(OrgAdminMixin, View):
             )
             msg = EmailMultiAlternatives(
                 subject=subject, body=text_body,
-                from_email=self.org.email or None,
                 to=[recipient],
+                **org_sender(self.org),
             )
             msg.attach_alternative(html_body, 'text/html')
             try:
