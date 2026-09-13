@@ -77,7 +77,7 @@ class Command(BaseCommand):
                 'member': member,
                 'invoice': invoice,
                 'org_name': org.name,
-                'org_email': org.email or settings.DEFAULT_FROM_EMAIL,
+                'org_email': org.email,
                 'portal_url': portal_url,
                 'has_guardians': has_guardians,
             }

@@ -84,7 +84,7 @@ def send_reminder_email(invoice, request=None):
     context = {
         'invoice': invoice,
         'org_name': org.name,
-        'org_email': org.email or settings.DEFAULT_FROM_EMAIL,
+        'org_email': org.email,
         'member': member,
         'portal_url': portal_url,
         'has_guardians': has_guardians,

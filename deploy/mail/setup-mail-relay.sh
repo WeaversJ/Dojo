@@ -14,6 +14,8 @@
 # server's mail hostname.
 #
 # Optional environment overrides:
+#   PUBLIC_IP      (default: this host's outbound IPv4 address) set it if the
+#                  host is behind NAT; the DNS records must name the public one
 #   MAIL_HOSTNAME  (default <domain> if it already points at this server,
 #                  otherwise mail.<domain>)  must match the server IP's PTR record
 #   DKIM_SELECTOR  (default dojo)
@@ -41,7 +43,34 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-PUBLIC_IP="$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')"
+ip_to_int() {
+    local IFS=.
+    local a b c d
+    read -r a b c d <<<"$1"
+    echo $(( (a << 24) | (b << 16) | (c << 8) | d ))
+}
+# Whether two IPv4 CIDRs share any address: they agree on the shorter prefix.
+cidrs_overlap() {
+    local len1=32 len2=32
+    [[ "$1" == */* ]] && len1="${1#*/}"
+    [[ "$2" == */* ]] && len2="${2#*/}"
+    local len=$(( len1 < len2 ? len1 : len2 ))
+    local mask=$(( len == 0 ? 0 : (0xFFFFFFFF << (32 - len)) & 0xFFFFFFFF ))
+    (( ($(ip_to_int "${1%/*}") & mask) == ($(ip_to_int "${2%/*}") & mask) ))
+}
+
+# The address mail leaves from, which the DNS records must name. Behind NAT
+# the local address is private and wrong, so require it to be given.
+PUBLIC_IP="${PUBLIC_IP:-$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')}"
+for private in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
+    if cidrs_overlap "$PUBLIC_IP" "$private"; then
+        echo "This server's address ($PUBLIC_IP) is private, so it's behind NAT and the" >&2
+        echo "DNS records would be wrong. Re-run with PUBLIC_IP set to the public address" >&2
+        echo "this server sends mail from." >&2
+        exit 1
+    fi
+done
+
 points_here() {
     getent ahostsv4 "$1" | awk '{print $1}' | grep -qx "$PUBLIC_IP"
 }
@@ -77,13 +106,34 @@ echo "==> Networks allowed to relay: $DOCKER_SUBNETS"
 
 # The interfaces Docker created, named from its own metadata: docker0 for the
 # default network, br-<network id> unless a network sets its own bridge name.
-DOCKER_BRIDGES=""
+DOCKER_BRIDGES="docker0"
 if command -v docker >/dev/null; then
     for net in $(docker network ls -q --no-trunc --filter driver=bridge); do
         name="$(docker network inspect "$net" -f '{{index .Options "com.docker.network.bridge.name"}}')"
         [[ "$name" == "<no value>" ]] && name=""  # how some Docker versions print a missing option
         DOCKER_BRIDGES="$DOCKER_BRIDGES ${name:-br-${net:0:12}}"
     done
+fi
+
+# Trusting those networks is only safe while Docker is the only thing on them.
+# Any other interface in the same range could relay through Postfix. Checked
+# before anything is installed or changed.
+OVERLAPS=""
+while read -r _ iface _ addr _; do
+    iface="${iface%%@*}"
+    [[ " lo $DOCKER_BRIDGES " == *" $iface "* ]] && continue
+    for trusted in $DOCKER_SUBNETS; do
+        if cidrs_overlap "$addr" "$trusted"; then
+            OVERLAPS="$OVERLAPS    $iface $addr"$'\n'
+            break
+        fi
+    done
+done < <(ip -4 -o addr show)
+if [[ -n "$OVERLAPS" ]]; then
+    echo "These non-Docker interfaces overlap the networks allowed to relay mail:" >&2
+    echo -n "$OVERLAPS" >&2
+    echo "Set TRUSTED_NETWORKS to your Docker subnets only (see 'docker network inspect')." >&2
+    exit 1
 fi
 
 # This sets the host up as a dedicated send-only relay, replacing Postfix's
@@ -108,34 +158,13 @@ debconf-set-selections <<EOF
 postfix postfix/main_mailer_type select Internet Site
 postfix postfix/mailname string $MAIL_HOSTNAME
 EOF
-DEBIAN_FRONTEND=noninteractive apt-get install -y -q postfix opendkim opendkim-tools python3-minimal >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q postfix opendkim opendkim-tools >/dev/null
 # Claim the freshly installed config straight away, so a re-run after a later
 # failure isn't mistaken for existing mail configuration.
 for f in /etc/postfix/main.cf /etc/opendkim.conf; do
     grep -qF "$MARKER" "$f" || sed -i "1i $MARKER" "$f"
 done
 echo "$MAIL_HOSTNAME" > /etc/mailname
-
-# Trusting those networks is only safe while Docker is the only thing on them.
-# Any other interface in the same range could relay through Postfix.
-OVERLAPS="$(ip -4 -o addr show | TRUSTED="$DOCKER_SUBNETS" SKIP="lo $DOCKER_BRIDGES" python3 -c '
-import ipaddress, os, sys
-trusted = [ipaddress.ip_network(n, strict=False) for n in os.environ["TRUSTED"].split()]
-skip = set(os.environ["SKIP"].split())
-for line in sys.stdin:
-    fields = line.split()
-    iface, addr = fields[1].split("@")[0], fields[3]
-    if iface in skip:
-        continue
-    if any(ipaddress.ip_interface(addr).network.overlaps(t) for t in trusted):
-        print(f"    {iface} {addr}")
-')"
-if [[ -n "$OVERLAPS" ]]; then
-    echo "These non-Docker interfaces overlap the networks allowed to relay mail:" >&2
-    echo "$OVERLAPS" >&2
-    echo "Set TRUSTED_NETWORKS to your Docker subnets only (see 'docker network inspect')." >&2
-    exit 1
-fi
 
 echo "==> Configuring OpenDKIM"
 mkdir -p "$KEY_DIR"

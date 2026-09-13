@@ -58,6 +58,22 @@ class OrgEmailHeadersTests(TestCase):
         self.assertEqual(message['Reply-To'], 'contact@example.com')
 
 
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class EmailFooterTests(TestCase):
+    def send(self, org_email):
+        org = Organisation.objects.create(name='Example Sports Club', slug='example', email=org_email)
+        send_welcome_email(Member.objects.create(organisation=org, name='Sam', email='sam@example.com'))
+        return mail.outbox[0].alternatives[0][0]
+
+    def test_invites_replies_when_org_has_email(self):
+        html = self.send('contact@example.com')
+        self.assertIn('You can reply to this email', html)
+        self.assertNotIn('Please do not reply', html)
+
+    def test_says_do_not_reply_without_org_email(self):
+        self.assertIn('Please do not reply', self.send(''))
+
+
 class OrgSettingsEmailValidationTests(TestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name='Example Sports Club', slug='example', email='contact@example.com')
