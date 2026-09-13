@@ -78,6 +78,13 @@ class OrgSettingsEmailValidationTests(TestCase):
         self.org.refresh_from_db()
         self.assertEqual(self.org.email, 'secretary@example.com')
 
+    def test_line_breaks_in_name_are_flattened_on_save(self):
+        self.client.post(
+            f'/org/{self.org.slug}/settings/', {'name': 'Example\r\nSports Club', 'email': ''}, secure=True,
+        )
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.name, 'Example Sports Club')
+
     def test_allows_clearing_email(self):
         self.post_settings('')
         self.org.refresh_from_db()

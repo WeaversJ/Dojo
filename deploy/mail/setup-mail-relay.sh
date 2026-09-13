@@ -81,6 +81,7 @@ DOCKER_BRIDGES=""
 if command -v docker >/dev/null; then
     for net in $(docker network ls -q --no-trunc --filter driver=bridge); do
         name="$(docker network inspect "$net" -f '{{index .Options "com.docker.network.bridge.name"}}')"
+        [[ "$name" == "<no value>" ]] && name=""  # how some Docker versions print a missing option
         DOCKER_BRIDGES="$DOCKER_BRIDGES ${name:-br-${net:0:12}}"
     done
 fi

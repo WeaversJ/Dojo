@@ -26,6 +26,9 @@ class Organisation(models.Model):
         }
 
     def save(self, *args, **kwargs):
+        # The name goes into email headers (From, subjects), where a line
+        # break makes Django refuse to send.
+        self.name = ' '.join(self.name.split())
         if not self.slug:
             self.slug = slugify(self.name)
         super().save(*args, **kwargs)
