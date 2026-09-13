@@ -20,6 +20,8 @@
 #   DKIM_BITS      (default 2048; use 1024 if your DNS host rejects long TXT records)
 #   TRUSTED_NETWORKS  (default: every existing Docker bridge subnet)
 #                  space-separated CIDRs allowed to relay
+#   REPLACE_EXISTING_CONFIG=1  go ahead on a host that already has Postfix or
+#                  OpenDKIM configured (the old files are backed up first)
 #
 # Run it with Dojo already up, so its Docker network exists. If that network
 # is ever recreated on a different subnet, Postfix will reject Dojo's mail
@@ -73,24 +75,60 @@ else
 fi
 echo "==> Networks allowed to relay: $DOCKER_SUBNETS"
 
+# The interfaces Docker created, named from its own metadata: docker0 for the
+# default network, br-<network id> unless a network sets its own bridge name.
+DOCKER_BRIDGES=""
+if command -v docker >/dev/null; then
+    for net in $(docker network ls -q --no-trunc --filter driver=bridge); do
+        name="$(docker network inspect "$net" -f '{{index .Options "com.docker.network.bridge.name"}}')"
+        DOCKER_BRIDGES="$DOCKER_BRIDGES ${name:-br-${net:0:12}}"
+    done
+fi
+
+# This sets the host up as a dedicated send-only relay, replacing Postfix's
+# and OpenDKIM's configuration, so don't silently take over existing mail.
+MARKER="# Managed by Dojo's deploy/mail/setup-mail-relay.sh"
+EXISTING=""
+for f in /etc/postfix/main.cf /etc/opendkim.conf; do
+    if [[ -f "$f" ]] && ! grep -qF "$MARKER" "$f"; then EXISTING="$EXISTING $f"; fi
+done
+if [[ -n "$EXISTING" ]]; then
+    if [[ "${REPLACE_EXISTING_CONFIG:-}" != 1 ]]; then
+        echo "Mail is already configured on this host:$EXISTING" >&2
+        echo "This script would replace that configuration. To go ahead anyway, re-run" >&2
+        echo "with REPLACE_EXISTING_CONFIG=1; each file is backed up to <file>.pre-dojo first." >&2
+        exit 1
+    fi
+    for f in $EXISTING; do cp -n "$f" "$f.pre-dojo"; done
+fi
+
 echo "==> Installing Postfix and OpenDKIM"
 debconf-set-selections <<EOF
 postfix postfix/main_mailer_type select Internet Site
 postfix postfix/mailname string $MAIL_HOSTNAME
 EOF
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q postfix opendkim opendkim-tools python3-minimal >/dev/null
+# Claim the freshly installed config straight away, so a re-run after a later
+# failure isn't mistaken for existing mail configuration.
+for f in /etc/postfix/main.cf /etc/opendkim.conf; do
+    grep -qF "$MARKER" "$f" || sed -i "1i $MARKER" "$f"
+done
 echo "$MAIL_HOSTNAME" > /etc/mailname
 
 # Trusting those networks is only safe while Docker is the only thing on them.
-# A non-Docker interface in the same range could relay through Postfix.
-OVERLAPS="$(ip -4 -o addr show | awk '$2 !~ /^(lo|docker0|br-|veth)/ {print $2, $4}' | python3 -c '
-import ipaddress, sys
-trusted = [ipaddress.ip_network(n, strict=False) for n in sys.argv[1:]]
+# Any other interface in the same range could relay through Postfix.
+OVERLAPS="$(ip -4 -o addr show | TRUSTED="$DOCKER_SUBNETS" SKIP="lo $DOCKER_BRIDGES" python3 -c '
+import ipaddress, os, sys
+trusted = [ipaddress.ip_network(n, strict=False) for n in os.environ["TRUSTED"].split()]
+skip = set(os.environ["SKIP"].split())
 for line in sys.stdin:
-    iface, addr = line.split()
+    fields = line.split()
+    iface, addr = fields[1].split("@")[0], fields[3]
+    if iface in skip:
+        continue
     if any(ipaddress.ip_interface(addr).network.overlaps(t) for t in trusted):
         print(f"    {iface} {addr}")
-' $DOCKER_SUBNETS)"
+')"
 if [[ -n "$OVERLAPS" ]]; then
     echo "These non-Docker interfaces overlap the networks allowed to relay mail:" >&2
     echo "$OVERLAPS" >&2
@@ -111,9 +149,8 @@ chmod 600 "$KEY_DIR/$DKIM_SELECTOR.private"
 
 printf '%s\n' 127.0.0.1 ::1 $DOCKER_SUBNETS > /etc/opendkim/TrustedHosts
 
-[[ -f /etc/opendkim.conf.orig ]] || cp /etc/opendkim.conf /etc/opendkim.conf.orig
 cat > /etc/opendkim.conf <<EOF
-# Managed by Dojo's deploy/mail/setup-mail-relay.sh — original at /etc/opendkim.conf.orig
+$MARKER
 Syslog                  yes
 SyslogSuccess           yes
 UMask                   007
@@ -147,6 +184,7 @@ postconf -e \
     "myhostname = $MAIL_HOSTNAME" \
     "myorigin = \$myhostname" \
     "mydestination = \$myhostname, localhost.localdomain, localhost" \
+    "relayhost =" \
     "inet_interfaces = all" \
     "inet_protocols = ipv4" \
     "mynetworks = 127.0.0.0/8 $DOCKER_SUBNETS" \

@@ -26,7 +26,9 @@ def org_sender(org):
     # An invalid address would make Django refuse to build the message at all,
     # so drop the Reply-To rather than the email.
     reply_to = org.email if org.email and is_valid_email(org.email) else None
+    # A line break in the name would make Django reject every message.
+    name = ' '.join(org.name.split())
     return {
-        'from_email': formataddr((org.name, address)),
+        'from_email': formataddr((name, address)),
         'reply_to': [reply_to] if reply_to else None,
     }

@@ -32,6 +32,10 @@ class OrgSenderTests(SimpleTestCase):
         org = Organisation(name='Example Sports Club', email='contact@example.com\nBcc: x@evil.example')
         self.assertIsNone(org_sender(org)['reply_to'])
 
+    def test_line_breaks_in_org_name_are_flattened(self):
+        org = Organisation(name='Example Sports\r\nClub', email='')
+        self.assertEqual(org_sender(org)['from_email'], 'Example Sports Club <noreply@club.example>')
+
     def test_bare_default_from_address(self):
         org = Organisation(name='Example Sports Club', email='')
         with self.settings(DEFAULT_FROM_EMAIL='noreply@club.example'):
