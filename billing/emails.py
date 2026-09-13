@@ -4,6 +4,8 @@ from django.conf import settings
 from django.urls import reverse
 from django.utils import timezone
 
+from dojo.email import org_sender
+
 
 def send_invoice_email(invoice, request=None):
     member = invoice.member
@@ -50,8 +52,8 @@ def send_invoice_email(invoice, request=None):
     msg = EmailMultiAlternatives(
         subject=subject,
         body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
         to=[recipient],
+        **org_sender(invoice.organisation),
     )
     msg.attach_alternative(html_body, 'text/html')
     msg.send()
@@ -82,7 +84,7 @@ def send_reminder_email(invoice, request=None):
     context = {
         'invoice': invoice,
         'org_name': org.name,
-        'org_email': org.email or settings.DEFAULT_FROM_EMAIL,
+        'org_email': org.email,
         'member': member,
         'portal_url': portal_url,
         'has_guardians': has_guardians,
@@ -95,8 +97,8 @@ def send_reminder_email(invoice, request=None):
         f"Pay here: {portal_url}\n"
     )
     msg = EmailMultiAlternatives(
-        subject=subject, body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient],
+        subject=subject, body=text_body, to=[recipient],
+        **org_sender(org),
     )
     msg.attach_alternative(html_body, 'text/html')
     msg.send()

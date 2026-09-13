@@ -7,6 +7,8 @@ from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 
+from dojo.email import org_sender
+
 from billing.models import Invoice
 
 
@@ -75,7 +77,7 @@ class Command(BaseCommand):
                 'member': member,
                 'invoice': invoice,
                 'org_name': org.name,
-                'org_email': org.email or settings.DEFAULT_FROM_EMAIL,
+                'org_email': org.email,
                 'portal_url': portal_url,
                 'has_guardians': has_guardians,
             }
@@ -89,8 +91,8 @@ class Command(BaseCommand):
             msg = EmailMultiAlternatives(
                 subject=subject,
                 body=f"Payment reminder for {invoice.period}. Please visit {portal_url} to pay.",
-                from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[recipient],
+                **org_sender(org),
             )
             msg.attach_alternative(html, 'text/html')
             msg.send()
