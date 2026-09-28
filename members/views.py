@@ -253,10 +253,14 @@ class MemberDetailView(OrgAdminMixin, DetailView):
                     member=self.object, item__in=items, completed=True
                 ).values_list('item_id', flat=True)
             )
+            groups = [
+                {'subsection': g['subsection'], 'items': [{'item': i, 'done': i.pk in done_ids} for i in g['items']]}
+                for g in section.grouped_items()
+            ]
             syllabus_cards.append({
                 'stage': prog.stage,
                 'section': section,
-                'items': [{'item': i, 'done': i.pk in done_ids} for i in items],
+                'groups': groups,
             })
         context['syllabus_cards'] = syllabus_cards
 
@@ -453,6 +457,14 @@ class ToggleMemberSyllabusItemView(OrgAdminMixin, View):
         progress.completed_at = timezone.now() if progress.completed else None
         progress.completed_by = request.user if progress.completed else None
         progress.save(update_fields=['completed', 'completed_at', 'completed_by'])
+        if request.htmx:
+            # Swap just this checklist item in place instead of reloading the page.
+            from django.shortcuts import render
+            return render(request, 'members/_syllabus_item.html', {
+                'org': self.org,
+                'member': member,
+                'entry': {'item': item, 'done': progress.completed},
+            })
         return redirect('member_detail', org_slug=self.org.slug, pk=member.pk)
 
 
