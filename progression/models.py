@@ -58,6 +58,46 @@ class SyllabusSection(models.Model):
         ordering = ['organisation', 'order', 'name']
 
 
+def split_syllabus_columns(groups):
+    """Split ordered checklist groups into two columns of near-equal height.
+
+    A sub-section is never split across columns; items with no sub-section can
+    be. Each entry in a group is a dict that may carry the item (``entry['item']``)
+    so its description can be counted.
+    """
+    def entry_height(entry):
+        item = entry['item'] if isinstance(entry, dict) else entry
+        return 1 + (0.6 if getattr(item, 'description', '') else 0)
+
+    # Units are the pieces we may put a column break between.
+    units = []
+    for g in groups:
+        if g['subsection'] or not g['items']:
+            height = (1 if g['subsection'] else 0) + sum(entry_height(e) for e in g['items'])
+            units.append((g['subsection'], list(g['items']), height))
+        else:
+            units.extend((None, [e], entry_height(e)) for e in g['items'])
+
+    total = sum(u[2] for u in units)
+    best_at, best_diff, running = len(units), total, 0
+    for i, unit in enumerate(units[:-1]):
+        running += unit[2]
+        diff = abs(total - 2 * running)
+        if diff < best_diff:
+            best_at, best_diff = i + 1, diff
+
+    def regroup(part):
+        out = []
+        for subsection, entries, _ in part:
+            if subsection is None and entries and out and out[-1]['subsection'] is None and out[-1]['items']:
+                out[-1]['items'].extend(entries)
+            else:
+                out.append({'subsection': subsection, 'items': list(entries)})
+        return out
+
+    return [regroup(units[:best_at]), regroup(units[best_at:])]
+
+
 class SyllabusSubsection(models.Model):
     """
     An optional header within a SyllabusSection used to split its checklist
