@@ -277,6 +277,48 @@
         </div>
         {% endif %}
 
+        {% for card in syllabus_cards %}
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom py-3">
+                <h6 class="mb-0">Syllabus — {{ card.stage.name }}</h6>
+                <p class="text-muted small mb-0 mt-1">{{ card.section.name }}{% if card.section.content %} · {{ card.section.content }}{% endif %}</p>
+            </div>
+            {% if card.groups %}
+            <div class="row g-0 syllabus-two-col">
+                {% for column in card.columns %}
+                <div class="col-md-6">
+                    {% for group in column %}
+                    {% if group.subsection %}
+                    <div class="px-3 pt-3 pb-1 small fw-semibold text-uppercase text-muted">{{ group.subsection.name }}</div>
+                    {% endif %}
+                    {% if group.items %}
+                    <ul class="list-group list-group-flush">
+                        {% for entry in group.items %}
+                        <li class="list-group-item py-2 px-3">
+                            {% include 'members/_syllabus_item.html' %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="card-body py-2">
+                <p class="text-muted small mb-0">No checklist items yet for this section.</p>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% if syllabus_cards %}
+        <style>
+            @media (min-width: 768px) {
+                .syllabus-two-col > .col-md-6:first-child { border-right: 1px solid var(--bs-border-color); }
+            }
+        </style>
+        {% endif %}
+
     </div>
 
     <div class="col-lg-4">
@@ -374,33 +416,6 @@
             </div>
             {% endif %}
         </div>
-
-        {% for card in syllabus_cards %}
-        <div class="card border-0 shadow-sm mb-3">
-            <div class="card-header bg-white border-bottom py-3">
-                <h6 class="mb-0">Syllabus — {{ card.stage.name }}</h6>
-                <p class="text-muted small mb-0 mt-1">{{ card.section.name }}{% if card.section.content %} · {{ card.section.content }}{% endif %}</p>
-            </div>
-            {% for group in card.groups %}
-            {% if group.subsection %}
-            <div class="px-3 pt-3 pb-1 small fw-semibold text-uppercase text-muted">{{ group.subsection.name }}</div>
-            {% endif %}
-            {% if group.items %}
-            <ul class="list-group list-group-flush">
-                {% for entry in group.items %}
-                <li class="list-group-item py-2 px-3">
-                    {% include 'members/_syllabus_item.html' %}
-                </li>
-                {% endfor %}
-            </ul>
-            {% endif %}
-            {% empty %}
-            <div class="card-body py-2">
-                <p class="text-muted small mb-0">No checklist items yet for this section.</p>
-            </div>
-            {% endfor %}
-        </div>
-        {% endfor %}
 
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-header bg-white border-bottom py-3">

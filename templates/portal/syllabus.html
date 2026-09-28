@@ -4,13 +4,9 @@
 
 {% block extra_head %}
 <style>
-/* Desktop: spread the checklist evenly over two columns. Mobile keeps one column. */
+/* Desktop: the checklist sits in two balanced columns (split server-side, sub-sections kept whole). Mobile keeps one column. */
 @media (min-width: 992px) {
-    .syllabus-columns { column-count: 2; column-gap: 0; column-rule: 1px solid var(--bs-border-color); }
-    .syllabus-columns .list-group { display: block; }
-    /* Keep each sub-section whole in one column; only a sub-section taller than a column splits. */
-    .syllabus-columns .syllabus-group { break-inside: avoid; }
-    .syllabus-columns .list-group-item { break-inside: avoid; }
+    .syllabus-two-col > .col-lg-6:first-child { border-right: 1px solid var(--bs-border-color); }
 }
 </style>
 {% endblock %}
@@ -32,9 +28,10 @@
         </div>
         {% if card.section %}
             {% if card.groups %}
-            <div class="syllabus-columns">
-            {% for group in card.groups %}
-            <div class="syllabus-group">
+            <div class="row g-0 syllabus-two-col">
+            {% for column in card.columns %}
+            <div class="col-lg-6">
+            {% for group in column %}
             {% if group.subsection %}
             <div class="syllabus-subsection px-3 pt-3 pb-1 small fw-semibold text-uppercase text-muted">{{ group.subsection.name }}</div>
             {% endif %}
@@ -56,6 +53,7 @@
                 </li>
                 {% endfor %}
             </ul>
+            {% endfor %}
             </div>
             {% endfor %}
             </div>

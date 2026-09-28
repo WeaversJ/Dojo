@@ -253,6 +253,7 @@ class MemberDetailView(OrgAdminMixin, DetailView):
                     member=self.object, item__in=items, completed=True
                 ).values_list('item_id', flat=True)
             )
+            from progression.models import split_syllabus_columns
             groups = [
                 {'subsection': g['subsection'], 'items': [{'item': i, 'done': i.pk in done_ids} for i in g['items']]}
                 for g in section.grouped_items()
@@ -261,6 +262,7 @@ class MemberDetailView(OrgAdminMixin, DetailView):
                 'stage': prog.stage,
                 'section': section,
                 'groups': groups,
+                'columns': split_syllabus_columns(groups),
             })
         context['syllabus_cards'] = syllabus_cards
 
