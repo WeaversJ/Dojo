@@ -29,6 +29,9 @@ services:
       - DB_HOST=db
       - DB_PORT=3306
       - DEBUG=${DEBUG:-True}
+    # Lets EMAIL_HOST=host.docker.internal reach a mail server on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

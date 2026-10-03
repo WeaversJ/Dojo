@@ -14,6 +14,7 @@ from django.urls import reverse
 from django.views import View
 from django.views.generic import ListView, TemplateView
 from auditlog.models import LogEntry
+from dojo.email import is_valid_email, org_sender
 from dojo.mixins import OrgAdminMixin, OrgMixin
 from .models import Announcement, Organisation, OrganisationMember, StaffHoliday
 from members.models import CustomField
@@ -72,6 +73,9 @@ class SetupView(View):
             errors.append('Passwords do not match.')
         elif len(password) < 8:
             errors.append('Password must be at least 8 characters.')
+        org_email = request.POST.get('org_email', '').strip()
+        if org_email and not is_valid_email(org_email):
+            errors.append('Organisation email is not a valid email address.')
 
         if errors:
             return render(request, self.template_name, {
@@ -469,18 +473,18 @@ class StaffListView(OrgAdminMixin, View):
 
 class TestEmailView(OrgAdminMixin, View):
     def post(self, request, org_slug):
-        from django.core.mail import send_mail
+        from django.core.mail import EmailMessage
         recipient = request.user.email
         if not recipient:
             messages.error(request, 'Your user account has no email address set — add one in the Django admin first.')
             return redirect('org_settings', org_slug=self.org.slug)
         try:
-            send_mail(
+            EmailMessage(
                 subject=f'Test email from {self.org.name} (Dojo)',
-                message=f'This is a test email from Dojo to confirm your email settings are working.\n\n— {self.org.name}',
-                from_email=None,
-                recipient_list=[recipient],
-            )
+                body=f'This is a test email from Dojo to confirm your email settings are working.\n\n— {self.org.name}',
+                to=[recipient],
+                **org_sender(self.org),
+            ).send()
             messages.success(request, f'Test email sent to {recipient}.')
         except Exception as e:
             messages.error(request, f'Email failed: {e}')
@@ -552,8 +556,13 @@ class OrgSettingsView(OrgAdminMixin, View):
         phone = request.POST.get('phone', '').strip()
         website = request.POST.get('website', '').strip()
 
+        error = None
         if not name:
-            messages.error(request, 'Organisation name is required.')
+            error = 'Organisation name is required.'
+        elif email and not is_valid_email(email):
+            error = f'"{email}" is not a valid email address.'
+        if error:
+            messages.error(request, error)
             return render(request, self.template_name, {
                 'org': self.org,
                 'org_membership': self.org_membership,
@@ -705,8 +714,8 @@ class AnnouncementListView(OrgMixin, View):
             msg = EmailMultiAlternatives(
                 subject=subject,
                 body=text_body,
-                from_email=None,
                 to=[recipient],
+                **org_sender(self.org),
             )
             msg.attach_alternative(html_body, 'text/html')
             try:
