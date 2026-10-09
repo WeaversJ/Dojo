@@ -27,6 +27,12 @@ ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts.split(',') if h.strip()] if _
 
 SITE_URL = os.environ.get('SITE_URL', 'http://localhost:8000')
 
+# Websites allowed to submit applications through the signup API
+# (/api/join/<org>/), comma-separated, e.g. https://www.myclub.co.uk
+SIGNUP_API_ORIGINS = [o.strip().rstrip('/') for o in os.environ.get('SIGNUP_API_ORIGINS', '').split(',') if o.strip()]
+SIGNUP_API_RATE_LIMIT = int(os.environ.get('SIGNUP_API_RATE_LIMIT', '5'))  # per IP per window
+SIGNUP_API_RATE_WINDOW = 60 * 60  # seconds
+
 # Secure-cookie/HTTPS-redirect settings are inferred from SITE_URL's scheme
 # rather than DEBUG. Self-hosted instances are frequently served over plain
 # HTTP (no reverse proxy/TLS termination in front) — forcing HTTPS on them
