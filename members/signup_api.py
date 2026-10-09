@@ -82,7 +82,10 @@ class SignupApiView(View):
         attempts = cache.get_or_set(key, 0, settings.SIGNUP_API_RATE_WINDOW)
         if attempts >= settings.SIGNUP_API_RATE_LIMIT:
             return JsonResponse({'errors': ['Too many applications from this address. Please try again later.']}, status=429)
-        cache.incr(key)
+        try:
+            cache.incr(key)
+        except ValueError:  # window expired between the read and the increment
+            cache.set(key, 1, settings.SIGNUP_API_RATE_WINDOW)
 
         application, errors = create_application(org, data)
         if errors:
