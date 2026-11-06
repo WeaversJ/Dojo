@@ -442,6 +442,9 @@
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-header bg-white border-bottom py-3">
                 <h6 class="mb-0">Recent attendance</h6>
+                <p class="small text-muted mb-0 mt-1">
+                    <strong>{{ session_counts.attended }}</strong> session{{ session_counts.attended|pluralize }} attended{% if session_counts.helped is not None %} · <strong>{{ session_counts.helped }}</strong> helped on{% endif %}
+                </p>
             </div>
             {% if recent_attended %}
             <div class="card-body p-0">

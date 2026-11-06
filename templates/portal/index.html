@@ -173,6 +173,9 @@
             {% if has_guardians %}
             <p class="small text-muted mb-0 mt-1"><i class="bi bi-person-heart me-1"></i>Junior member</p>
             {% endif %}
+            <p class="small text-muted mb-0 mt-1">
+                <strong>{{ session_counts.attended }}</strong> session{{ session_counts.attended|pluralize }} attended{% if session_counts.helped is not None %} · <strong>{{ session_counts.helped }}</strong> helped on{% endif %}
+            </p>
             <a href="{% url 'portal_classes' token=member.token %}" class="small">My classes <i class="bi bi-arrow-right ms-1"></i></a>
         </div>
     </div>
