@@ -221,6 +221,7 @@ class MemberDetailView(OrgAdminMixin, DetailView):
             .select_related('assigned_class')
             .order_by('assigned_class__name')
         )
+        context['session_counts'] = self.object.session_counts()
         context['recent_attended'] = (
             Attendance.objects.filter(member=self.object, present=True)
             .select_related('session', 'session__assigned_class')

@@ -90,6 +90,7 @@ class PortalView(View):
             'stripe_enabled': stripe_enabled,
             'subscription_enabled': subscription_enabled,
             'leaving_request': leaving_request,
+            'session_counts': member.session_counts(),
         })
 
 
@@ -175,6 +176,7 @@ class PortalClassesView(View):
             'org': member.organisation,
             'enrolments': enrolments,
             'recent_attendance': recent_attendance,
+            'session_counts': member.session_counts(),
         })
 
 
