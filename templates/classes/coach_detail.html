@@ -25,11 +25,10 @@
                     {% csrf_token %}
                     <input type="hidden" name="next" value="coach_class_detail">
                     <span class="small text-muted text-nowrap">Generate next</span>
-                    <select name="weeks" class="form-select form-select-sm" style="width: auto;">
-                        <option value="5">5 weeks</option>
-                        <option value="6" selected>6 weeks</option>
-                        <option value="7">7 weeks</option>
-                    </select>
+                    <input type="text" name="weeks" value="6" inputmode="numeric" pattern="[0-9]*" maxlength="2" required
+                           class="form-control form-control-sm text-center" style="width: 4.5rem;" aria-label="Number of weeks"
+                           oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                    <span class="small text-muted">weeks</span>
                     <button type="submit" class="btn btn-sm btn-dark text-nowrap">Generate</button>
                 </form>
                 {% else %}

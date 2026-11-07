@@ -39,7 +39,7 @@ class InvoiceListView(OrgMixin,ListView):
             .order_by('-due_date', 'member__name')
         )
         status = self.request.GET.get('status', '')
-        if status in ('unpaid', 'paid', 'overdue'):
+        if status in ('unpaid', 'paid', 'overdue', 'cancelled'):
             qs = qs.filter(status=status)
         q = self.request.GET.get('q', '').strip()
         if q:
@@ -258,9 +258,42 @@ class InvoiceDetailView(OrgMixin,DetailView):
         return context
 
 
+class CancelInvoiceView(OrgMixin, View):
+    """Cancel an invoice issued in error. The record is kept (status Cancelled, who/when/why)
+    so incorrect invoicing can be tracked; any product stock on it is returned."""
+    def post(self, request, org_slug, pk):
+        invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        if invoice.is_cancelled:
+            messages.info(request, 'This invoice is already cancelled.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
+        if invoice.payments.exists():
+            messages.error(request, 'This invoice has payments recorded against it, so it can\'t be cancelled.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
+
+        with transaction.atomic():
+            invoice.status = Invoice.Status.CANCELLED
+            invoice.cancelled_at = datetime.now(tz=timezone.utc)
+            invoice.cancelled_by = request.user
+            invoice.cancel_reason = request.POST.get('reason', '').strip()
+            invoice.save(update_fields=['status', 'cancelled_at', 'cancelled_by', 'cancel_reason'])
+            for item in invoice.items.select_related('variant'):
+                item.variant.adjust_stock(
+                    item.quantity,
+                    reason=StockMovement.Reason.RETURN,
+                    invoice=invoice,
+                    notes=f'Invoice #{invoice.pk} cancelled',
+                    user=request.user,
+                )
+        messages.success(request, 'Invoice cancelled.')
+        return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
+
+
 class MarkPaidView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        if invoice.is_cancelled:
+            messages.error(request, 'A cancelled invoice can\'t be marked as paid.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         invoice.status = Invoice.Status.PAID
         invoice.save(update_fields=['status'])
         messages.success(request, 'Invoice marked as paid.')
@@ -270,6 +303,9 @@ class MarkPaidView(OrgMixin,View):
 class MarkUnpaidView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        if invoice.is_cancelled:
+            messages.error(request, 'A cancelled invoice can\'t be marked as unpaid.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         invoice.status = Invoice.Status.UNPAID
         invoice.save(update_fields=['status'])
         messages.success(request, 'Invoice marked as unpaid.')
@@ -279,6 +315,9 @@ class MarkUnpaidView(OrgMixin,View):
 class RecordPaymentView(OrgMixin,View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        if invoice.is_cancelled:
+            messages.error(request, 'Payments can\'t be recorded against a cancelled invoice.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         amount_raw = request.POST.get('amount', '').strip()
         method = request.POST.get('method', Payment.Method.MANUAL)
         notes = request.POST.get('notes', '').strip()

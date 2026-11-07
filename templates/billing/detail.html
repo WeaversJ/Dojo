@@ -9,6 +9,7 @@
     <a href="{% url 'invoice_list' org_slug=org.slug %}" class="btn btn-outline-secondary btn-sm">
         <i class="bi bi-arrow-left me-1"></i> Billing
     </a>
+    {% if invoice.status != 'cancelled' %}
     {% if invoice.status != 'paid' %}
     <form method="post" action="{% url 'invoice_mark_paid' org_slug=org.slug pk=invoice.pk %}">
         {% csrf_token %}
@@ -36,6 +37,17 @@
             {% if invoice.reminder_sent_at %}<span class="opacity-75 ms-1" style="font-size:0.75rem;">(last {{ invoice.reminder_sent_at|date:"d M" }})</span>{% endif %}
         </button>
     </form>
+    {% endif %}
+    {% if not payments %}
+    <form method="post" action="{% url 'invoice_cancel' org_slug=org.slug pk=invoice.pk %}">
+        {% csrf_token %}
+        <input type="hidden" name="reason" value="">
+        <button type="submit" class="btn btn-outline-danger btn-sm"
+                onclick="var r = prompt('Cancel this invoice? Optionally enter a reason (e.g. issued in error):'); if (r === null) { return false; } this.form.reason.value = r;">
+            <i class="bi bi-x-circle me-1"></i> Cancel invoice
+        </button>
+    </form>
+    {% endif %}
     {% endif %}
 </div>
 {% endblock %}
@@ -76,12 +88,22 @@
                     <dd class="col-sm-8 small">
                         {% if invoice.status == 'paid' %}
                         <span class="badge bg-success-subtle text-success">Paid</span>
+                        {% elif invoice.status == 'cancelled' %}
+                        <span class="badge bg-danger-subtle text-danger">Cancelled</span>
                         {% elif invoice.is_overdue %}
                         <span class="badge bg-warning-subtle text-warning">Overdue</span>
                         {% else %}
                         <span class="badge bg-secondary-subtle text-secondary">Unpaid</span>
                         {% endif %}
                     </dd>
+
+                    {% if invoice.status == 'cancelled' %}
+                    <dt class="col-sm-4 text-muted fw-normal small">Cancelled</dt>
+                    <dd class="col-sm-8 small">
+                        {{ invoice.cancelled_at|date:"d M Y H:i" }}{% if invoice.cancelled_by %} by {{ invoice.cancelled_by.get_full_name|default:invoice.cancelled_by.username }}{% endif %}
+                        {% if invoice.cancel_reason %}<div class="text-muted">{{ invoice.cancel_reason }}</div>{% endif %}
+                    </dd>
+                    {% endif %}
 
                     <dt class="col-sm-4 text-muted fw-normal small">Created</dt>
                     <dd class="col-sm-8 small mb-0">{{ invoice.created_at|date:"d M Y" }}</dd>
@@ -134,14 +156,14 @@
                     <span class="text-muted fw-normal small ms-1">£{{ amount_paid|floatformat:2 }} of £{{ invoice.amount|floatformat:2 }} received</span>
                     {% endif %}
                 </h6>
-                {% if invoice.status != 'paid' %}
+                {% if invoice.status != 'paid' and invoice.status != 'cancelled' %}
                 <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#record-payment">
                     <i class="bi bi-plus-lg me-1"></i> Record payment
                 </button>
                 {% endif %}
             </div>
 
-            {% if invoice.status != 'paid' %}
+            {% if invoice.status != 'paid' and invoice.status != 'cancelled' %}
             <div class="collapse" id="record-payment">
                 <div class="card-body border-bottom bg-light">
                     <form method="post" action="{% url 'invoice_record_payment' org_slug=org.slug pk=invoice.pk %}">

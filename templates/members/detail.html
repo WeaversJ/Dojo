@@ -566,6 +566,8 @@
                             <td class="small py-2 text-end pe-3">
                                 {% if invoice.status == 'paid' %}
                                 <span class="badge bg-success-subtle text-success">Paid</span>
+                                {% elif invoice.status == 'cancelled' %}
+                                <span class="badge bg-danger-subtle text-danger">Cancelled</span>
                                 {% elif invoice.is_overdue %}
                                 <span class="badge bg-warning-subtle text-warning">Overdue</span>
                                 {% else %}
