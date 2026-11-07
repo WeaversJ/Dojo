@@ -176,7 +176,7 @@ Member
 - joined_date
 - custom_field_values (JSON)
 - monthly_fee, billing_policy (FK to BillingPolicy, nullable)
-- stripe_customer_id, stripe_subscription_id, subscription_status
+- stripe_customer_id (for automatic payments)
 - licence_number, licence_expiry
 - medical_info
 - archived_at, retention_notes, anonymised_at (GDPR retention/anonymisation; `anonymise()` scrubs PII in place while keeping the row for FK integrity)
@@ -324,6 +324,7 @@ All apps are in `INSTALLED_APPS`. All models are migrated.
 
 Public/unauthenticated routes:
 - `/join/<org_slug>/` — public member signup page (no login)
+- `/api/join/<org_slug>/` — JSON signup API for a club's own website (no login; browser origins limited by `SIGNUP_API_ORIGINS`)
 - `/p/<token>/` — tokenised member portal (no login)
 
 ### URL Structure
@@ -333,10 +334,9 @@ Public/unauthenticated routes:
 /admin/                        → Django admin
 /login/, /logout/, /password-reset/
 /join/<slug>/                  → public membership signup (no login)
+/api/join/<slug>/              → JSON signup API for club websites (same rules as /join/)
 /p/<token>/                    → member portal (no login)
 /p/<token>/checkout/<inv_pk>/  → Stripe Checkout for invoice
-/p/<token>/subscribe/          → Stripe subscription signup
-/p/<token>/billing-portal/     → Stripe billing portal
 /stripe/webhook/               → Stripe webhook handler
 
 /org/<slug>/                   → org dashboard
@@ -416,6 +416,19 @@ All templates extend `org/base.html`. Partials in `templates/members/partials/` 
 - `Pillow` — image handling
 - `django-auditlog` — audit logging (was already planned)
 - `django-htmx` — HTMX middleware (was already planned)
+
+---
+
+## QA and Testing
+
+The QA strategy lives under `docs/qa-strategy/` (landing page: `docs/qa-strategy/README.md`),
+with a one-paragraph stub at `QA_STRATEGY.md`. It is a risk-weighted plan: the access
+boundary and personal data first, money second, everything else ordinary. Read the hard
+rules on the landing page before changing any view that takes an `org_slug`, a token or an
+object key, any money path, any email send site, or any management command. The PR
+template's checklist is those rules. The backlog is GitHub issues labelled `qa-strategy`,
+one milestone per phase; decisions still open are in
+`docs/qa-strategy/06-open-items-and-decision-log.md`.
 
 ---
 

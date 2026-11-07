@@ -49,32 +49,35 @@
 </div>
 {% endif %}
 
+{% if classes %}
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-header bg-white border-bottom py-3 d-flex flex-wrap gap-2 justify-content-between align-items-center">
         <h6 class="mb-0">Attendance trend <span class="text-muted fw-normal small">last {{ trend_count }} sessions</span></h6>
         <form method="get" class="d-flex gap-2 align-items-center">
             {% if selected_class %}<input type="hidden" name="class" value="{{ selected_class }}">{% endif %}
             {% if sort %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
-            <select name="trend_class" class="form-select form-select-sm" style="max-width:220px;" onchange="this.form.submit()">
+            <select name="trend_class" class="form-select form-select-sm" style="max-width:220px;" onchange="this.form.submit()" aria-label="Class for the trend chart">
                 {% for cls in classes %}
                 <option value="{{ cls.pk }}" {% if trend_selected_class == cls.pk|stringformat:"s" %}selected{% endif %}>{{ cls.name }}</option>
                 {% endfor %}
             </select>
-            <select name="trend_count" class="form-select form-select-sm" style="max-width:150px;" onchange="this.form.submit()">
-                <option value="10" {% if trend_count == 10 %}selected{% endif %}>Last 10 sessions</option>
-                <option value="25" {% if trend_count == 25 %}selected{% endif %}>Last 25 sessions</option>
-                <option value="50" {% if trend_count == 50 %}selected{% endif %}>Last 50 sessions</option>
+            <select name="trend_count" class="form-select form-select-sm" style="max-width:170px;" onchange="this.form.submit()" aria-label="How many sessions">
+                {% for n in trend_counts %}
+                <option value="{{ n }}" {% if trend_count == n %}selected{% endif %}>Last {{ n }} sessions</option>
+                {% endfor %}
             </select>
+            <noscript><button type="submit" class="btn btn-sm btn-outline-secondary">Show</button></noscript>
         </form>
     </div>
     <div class="card-body">
         {% if trend_has_data %}
-        <canvas id="attendanceTrendChart" height="80"></canvas>
+        <canvas id="attendanceTrendChart" height="80" aria-label="Members present at each session, average {{ trend_average }}" role="img"></canvas>
         {% else %}
-        <p class="text-muted small mb-0">No sessions recorded yet for this class.</p>
+        <p class="text-muted small mb-0">No registers taken for this class yet.</p>
         {% endif %}
     </div>
 </div>
+{% endif %}
 
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white border-bottom py-3 d-flex flex-wrap gap-2 justify-content-between align-items-center">
@@ -121,9 +124,13 @@
                 {% for member in members %}
                 <tr>
                     <td class="ps-3 py-2">
+                        {% if request.user.is_superuser or org_membership.is_org_admin %}
                         <a href="{% url 'member_detail' org_slug=org.slug pk=member.pk %}" class="text-decoration-none fw-semibold text-dark small">
                             {{ member.name }}
                         </a>
+                        {% else %}
+                        <span class="fw-semibold small">{{ member.name }}</span>
+                        {% endif %}
                     </td>
                     <td class="py-2 small text-muted">
                         {% if member.last_attended %}
@@ -204,52 +211,36 @@
 {% endblock %}
 
 {% block extra_scripts %}
+{{ block.super }}
 {% if trend_has_data %}
 <script>
-const trendCtx = document.getElementById('attendanceTrendChart');
-const trendAverage = {{ trend_average }};
-const trendData = {{ trend_data|safe }};
-const isDarkMode = document.documentElement.getAttribute('data-bs-theme') === 'dark';
-const trendLineColor = isDarkMode ? '#e8e8e8' : '#212529';
-new Chart(trendCtx, {
-    type: 'line',
-    data: {
-        labels: {{ trend_labels|safe }},
-        datasets: [
-            {
-                label: 'Members present',
-                data: trendData,
-                borderColor: trendLineColor,
-                backgroundColor: isDarkMode ? 'rgba(232,232,232,0.10)' : 'rgba(33,37,41,0.08)',
-                tension: 0.3,
-                fill: true,
-                pointRadius: 4,
-                pointBackgroundColor: trendLineColor,
-            },
-            {
-                label: `Average (${trendAverage})`,
-                data: trendData.map(() => trendAverage),
-                borderColor: '#dc3545',
-                borderDash: [6, 4],
-                borderWidth: 2,
-                pointRadius: 0,
-                fill: false,
-            },
-        ],
-    },
-    options: {
-        responsive: true,
-        plugins: {
-            legend: { display: true, position: 'bottom', labels: { boxWidth: 14 } },
+(function () {
+    const data = {{ trend_data|safe }};
+    const average = {{ trend_average }};
+    const styles = getComputedStyle(document.documentElement);
+    const line = styles.getPropertyValue('--dojo-text').trim() || '#212529';
+    new Chart(document.getElementById('attendanceTrendChart'), {
+        type: 'line',
+        data: {
+            labels: {{ trend_labels|safe }},
+            datasets: [
+                {
+                    label: 'Members present', data: data, borderColor: line, backgroundColor: 'rgba(127,127,127,0.12)',
+                    tension: 0.3, fill: true, pointRadius: 4, pointBackgroundColor: line,
+                },
+                {
+                    label: `Average (${average})`, data: data.map(() => average), borderColor: '#dc3545',
+                    borderDash: [6, 4], borderWidth: 2, pointRadius: 0, fill: false,
+                },
+            ],
         },
-        scales: {
-            y: {
-                beginAtZero: true,
-                ticks: { precision: 0 },
-            },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 14 } } },
+            scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
         },
-    },
-});
+    });
+})();
 </script>
 {% endif %}
 {% endblock %}

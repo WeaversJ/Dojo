@@ -8,15 +8,21 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied
 from django.core.management import call_command
 from django.db.models import Q, Sum
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
 from django.views.generic import ListView, TemplateView
 from auditlog.models import LogEntry
 from dojo.mixins import OrgAdminMixin, OrgMixin
+from dojo.version import RELEASES_URL, get_version_info
 from .models import Announcement, Organisation, OrganisationMember, StaffHoliday
 from members.models import CustomField
+from accounts.policy import device_for, two_factor_required
+from mailer.forms import provider_rows as email_provider_rows
+from mailer import blocks as email_blocks
+from mailer import compose
+from billing.payment_forms import form_context as payment_form_context
 
 
 class SetupView(View):
@@ -32,8 +38,14 @@ class SetupView(View):
         return super().dispatch(request, *args, **kwargs)
 
     def get(self, request):
+        from .features import FEATURES, default_enabled, feature_rows
+        from .optional_fields import effective_fields, field_groups
         return render(request, self.template_name, {
             'demo_mode': request.GET.get('demo') == '1',
+            'feature_rows': feature_rows({f.key for f in FEATURES if default_enabled(f)}),
+            'field_groups': field_groups(effective_fields({})),
+            **email_provider_rows(),
+            **payment_form_context(),
         })
 
     def post(self, request):
@@ -73,8 +85,25 @@ class SetupView(View):
         elif len(password) < 8:
             errors.append('Password must be at least 8 characters.')
 
+        from .features import choices_from_keys, effective_features, feature_rows
+        from .optional_fields import choices_from_keys as field_choices
+        from .optional_fields import effective_fields, field_groups, labels_from_post
+        feature_choices = choices_from_keys(request.POST.getlist('features'))
+        optional_field_choices = field_choices(request.POST.getlist('optional_fields'))
+        labels = labels_from_post(request.POST)
+        from mailer.forms import apply_post
+        from mailer.models import EmailSettings
+        email_settings = EmailSettings()
+        errors += apply_post(email_settings, request.POST)
+        from billing.models import PaymentSettings
+        from billing.payment_forms import apply_post as apply_payment_post
+        payment_settings = PaymentSettings()
+        errors += apply_payment_post(payment_settings, request.POST)
+
         if errors:
             return render(request, self.template_name, {
+                'feature_rows': feature_rows(effective_features(feature_choices)),
+                'field_groups': field_groups(effective_fields(optional_field_choices), labels),
                 'errors': errors,
                 'demo_mode': request.GET.get('demo') == '1',
                 'org_name': org_name,
@@ -83,6 +112,8 @@ class SetupView(View):
                 'org_email': request.POST.get('org_email', '').strip(),
                 'org_phone': request.POST.get('org_phone', '').strip(),
                 'org_website': request.POST.get('org_website', '').strip(),
+                **email_provider_rows(post=request.POST),
+                **payment_form_context(post=request.POST),
             })
 
         user = User.objects.create_superuser(username=username, email=admin_email, password=password)
@@ -91,8 +122,20 @@ class SetupView(View):
             email=request.POST.get('org_email', '').strip(),
             phone=request.POST.get('org_phone', '').strip(),
             website=request.POST.get('org_website', '').strip(),
+            features=feature_choices,
+            optional_fields=optional_field_choices,
+            # New clubs start with two-step sign-in required; Settings → Security can relax it.
+            settings={**labels, 'two_factor': Organisation.TWO_FACTOR_ALL},
         )
         OrganisationMember.objects.create(user=user, organisation=org, role=OrganisationMember.Role.ORG_ADMIN)
+        # "Not yet" saves nothing, so the server's EMAIL_* settings (if any) carry on applying.
+        if email_settings.provider != 'log':
+            email_settings.organisation = org
+            email_settings.save()
+        if email_settings.provider == 'dojo_mail':
+            email_settings.dkim_private_key(create=True)
+        payment_settings.organisation = org
+        payment_settings.save()
 
         login(request, user)
         return redirect('org_dashboard', org_slug=org.slug)
@@ -211,27 +254,35 @@ class DashboardView(OrgMixin, TemplateView):
 
         pending_applications = MemberApplication.objects.filter(
             organisation=self.org, status=MemberApplication.Status.PENDING
-        ).count() if is_admin else 0
+        ).count() if is_admin and self.org.has_feature('applications') else 0
 
         thirty_days = today + timedelta(days=30)
+        track_licences = is_admin and self.org.has_field('licence')
         licences_expiring = active_members.filter(
             licence_expiry__lte=thirty_days, licence_expiry__gte=today
-        ).count() if is_admin else 0
+        ).count() if track_licences else 0
         licences_expired = active_members.filter(
             licence_expiry__lt=today
-        ).count() if is_admin else 0
+        ).count() if track_licences else 0
 
-        staff_expiring = OrganisationMember.objects.filter(
-            organisation=self.org
-        ).filter(
-            Q(dbs_expiry__lte=thirty_days, dbs_expiry__gte=today) |
-            Q(coaching_licence_expiry__lte=thirty_days, coaching_licence_expiry__gte=today)
-        ).count() if is_admin else 0
-        staff_expired = OrganisationMember.objects.filter(
-            organisation=self.org
-        ).filter(
-            Q(dbs_expiry__lt=today) | Q(coaching_licence_expiry__lt=today)
-        ).count() if is_admin else 0
+        # Staff expiry warnings only cover the checks the club has switched on.
+        staff_checks = [
+            (expiry_field, label)
+            for key, expiry_field, label in (
+                ('dbs', 'dbs_expiry', 'DBS'),
+                ('coaching_licence', 'coaching_licence_expiry', self.org.coaching_licence_label),
+            )
+            if self.org.has_field(key)
+        ]
+        staff_expiring = staff_expired = 0
+        if is_admin and staff_checks:
+            staff = OrganisationMember.objects.filter(organisation=self.org)
+            expiring_q, expired_q = Q(pk__in=[]), Q(pk__in=[])
+            for expiry_field, _ in staff_checks:
+                expiring_q |= Q(**{f'{expiry_field}__lte': thirty_days, f'{expiry_field}__gte': today})
+                expired_q |= Q(**{f'{expiry_field}__lt': today})
+            staff_expiring = staff.filter(expiring_q).count()
+            staff_expired = staff.filter(expired_q).count()
 
         onboarding = None
         if is_admin and not self.org.settings.get('onboarding_dismissed'):
@@ -239,7 +290,10 @@ class DashboardView(OrgMixin, TemplateView):
             has_member = member_count > 0
             has_class = self.org.classes.exists()
             has_coach = ClassCoach.objects.filter(assigned_class__organisation=self.org).exists() if has_class else False
-            has_invoice = Invoice.objects.filter(organisation=self.org).exists()
+            has_invoice = (
+                not self.org.has_feature('billing')
+                or Invoice.objects.filter(organisation=self.org).exists()
+            )
             if not (has_member and has_class and has_coach and has_invoice):
                 onboarding = {
                     'has_member': has_member,
@@ -249,7 +303,7 @@ class DashboardView(OrgMixin, TemplateView):
                 }
 
         unsigned_waivers_count = 0
-        if is_admin:
+        if is_admin and self.org.has_feature('documents'):
             from documents.models import SignedWaiver, WaiverTemplate
             required_templates = WaiverTemplate.objects.filter(
                 organisation=self.org, is_active=True, is_required=True
@@ -282,6 +336,7 @@ class DashboardView(OrgMixin, TemplateView):
             'licences_expired': licences_expired,
             'staff_expiring': staff_expiring,
             'staff_expired': staff_expired,
+            'staff_check_names': ' or '.join(label for _, label in staff_checks),
             'unsigned_waivers_count': unsigned_waivers_count,
             'onboarding': onboarding,
         })
@@ -343,7 +398,7 @@ class StaffListView(OrgAdminMixin, View):
     def get(self, request, org_slug):
         staff = (
             OrganisationMember.objects.filter(organisation=self.org)
-            .select_related('user')
+            .select_related('user', 'user__two_factor')
             .order_by('user__first_name', 'user__username')
         )
         today = date.today()
@@ -361,6 +416,42 @@ class StaffListView(OrgAdminMixin, View):
             'thirty_days': today + timedelta(days=30),
             'holidays': holidays,
         })
+
+    def _account_action_refusal(self, user, name):
+        """Why the signed-in admin can't change `user`'s sign-in, or '' if they can."""
+        actor = self.request.user
+        if user == actor:
+            return 'Use your own account page to change your sign-in.'
+        if user.is_superuser and not actor.is_superuser:
+            return f'{name} is a site superuser; only another superuser can change their sign-in.'
+        if not actor.is_superuser and user.organisation_memberships.exclude(organisation=self.org).exists():
+            return f'{name} also works for another club on this Dojo, so only a site superuser can change their sign-in.'
+        return ''
+
+    def _send_password_reset(self, user):
+        from urllib.parse import urlsplit
+
+        from django.conf import settings as django_settings
+        from django.contrib.auth.tokens import default_token_generator
+
+        from mailer.password_reset import ClubPasswordResetForm
+        from django.utils.encoding import force_bytes
+        from django.utils.http import urlsafe_base64_encode
+        site = urlsplit(django_settings.SITE_URL)
+        context = {
+            'email': user.email,
+            'domain': site.netloc,
+            'site_name': self.org.name,
+            'uid': urlsafe_base64_encode(force_bytes(user.pk)),
+            'user': user,
+            'token': default_token_generator.make_token(user),
+            'protocol': site.scheme or 'https',
+            'organisation': self.org,
+        }
+        ClubPasswordResetForm().send_mail(
+            'registration/password_reset_subject.txt', 'registration/password_reset_email.html',
+            context, None, user.email,
+        )
 
     def post(self, request, org_slug):
         action = request.POST.get('action')
@@ -386,7 +477,11 @@ class StaffListView(OrgAdminMixin, View):
                 first_name=first_name,
                 last_name=last_name,
             )
-            OrganisationMember.objects.create(user=user, organisation=self.org, role=role)
+            om = OrganisationMember(user=user, organisation=self.org, role=role)
+            if role == OrganisationMember.Role.COACH:
+                for name in OrganisationMember.NEW_COACH_CAPABILITIES:
+                    setattr(om, f'can_{name}', True)
+            om.save()
             messages.success(request, f'{user.get_full_name() or username} added as {role}.')
 
         elif action == 'change_role':
@@ -413,22 +508,52 @@ class StaffListView(OrgAdminMixin, View):
         elif action == 'update_qualifications':
             member_pk = request.POST.get('member_pk')
             om = get_object_or_404(OrganisationMember, pk=member_pk, organisation=self.org)
-            om.dbs_number = request.POST.get('dbs_number', '').strip()
-            om.coaching_licence = request.POST.get('coaching_licence', '').strip()
-            dbs_exp = request.POST.get('dbs_expiry', '').strip()
-            cl_exp = request.POST.get('coaching_licence_expiry', '').strip()
-            om.dbs_expiry = dbs_exp or None
-            om.coaching_licence_expiry = cl_exp or None
-            om.emergency_contact_name = request.POST.get('emergency_contact_name', '').strip()
-            om.emergency_contact_phone = request.POST.get('emergency_contact_phone', '').strip()
-            om.emergency_contact_2_name = request.POST.get('emergency_contact_2_name', '').strip()
-            om.emergency_contact_2_phone = request.POST.get('emergency_contact_2_phone', '').strip()
-            om.save(update_fields=[
-                'dbs_number', 'dbs_expiry', 'coaching_licence', 'coaching_licence_expiry',
-                'emergency_contact_name', 'emergency_contact_phone',
-                'emergency_contact_2_name', 'emergency_contact_2_phone',
-            ])
-            messages.success(request, 'Qualifications updated.')
+            # Only fields the club has switched on are on the form; leave the rest untouched.
+            from .optional_fields import STAFF, enabled_model_fields
+            fields = enabled_model_fields(self.org, STAFF)
+            for name in fields:
+                value = request.POST.get(name, '').strip()
+                setattr(om, name, (value or None) if name.endswith('_expiry') else value)
+            if fields:
+                om.save(update_fields=fields)
+            messages.success(request, 'Details updated.')
+
+        elif action in ('reset_two_factor', 'send_password_reset', 'lock_account', 'unlock_account'):
+            om = get_object_or_404(OrganisationMember, pk=request.POST.get('member_pk'), organisation=self.org)
+            user = om.user
+            name = user.get_full_name() or user.username
+            refusal = self._account_action_refusal(user, name)
+            if refusal:
+                messages.error(request, refusal)
+            elif action == 'reset_two_factor':
+                from accounts.models import remove_two_factor
+                remove_two_factor(user)
+                messages.success(request, f'Two-step sign-in reset for {name}. They\'ll set it up again '
+                                          'next time they sign in if the club requires it.')
+            elif action == 'send_password_reset':
+                if not user.email:
+                    messages.error(request, f'{name} has no email address. Add one on their account first.')
+                else:
+                    self._send_password_reset(user)
+                    messages.success(request, f'Password reset link emailed to {name}.')
+            else:
+                # Inactive accounts can't sign in, and Django ends their open sessions on the next request.
+                user.is_active = action == 'unlock_account'
+                user.save(update_fields=['is_active'])
+                messages.success(request, f'{name} can sign in again.' if user.is_active
+                                 else f'{name} is locked out and signed out everywhere.')
+            return redirect(f"{reverse('org_staff', kwargs={'org_slug': self.org.slug})}")
+
+        elif action == 'update_capabilities':
+            member_pk = request.POST.get('member_pk')
+            om = get_object_or_404(OrganisationMember, pk=member_pk, organisation=self.org)
+            granted = set(request.POST.getlist('capabilities'))
+            fields = []
+            for name, _, _ in OrganisationMember.CAPABILITIES:
+                setattr(om, f'can_{name}', name in granted)
+                fields.append(f'can_{name}')
+            om.save(update_fields=fields)
+            messages.success(request, f'Permissions updated for {om.user.get_full_name() or om.user.username}.')
 
         elif action == 'add_holiday':
             member_pk = request.POST.get('member_pk')
@@ -472,19 +597,21 @@ class TestEmailView(OrgAdminMixin, View):
         from django.core.mail import send_mail
         recipient = request.user.email
         if not recipient:
-            messages.error(request, 'Your user account has no email address set — add one in the Django admin first.')
-            return redirect('org_settings', org_slug=self.org.slug)
+            messages.error(request, 'Your account has no email address. Add one on your account page first.')
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#email")
+        from mailer import connection_for
         try:
             send_mail(
                 subject=f'Test email from {self.org.name} (Dojo)',
                 message=f'This is a test email from Dojo to confirm your email settings are working.\n\n— {self.org.name}',
                 from_email=None,
                 recipient_list=[recipient],
+                connection=connection_for(self.org),
             )
-            messages.success(request, f'Test email sent to {recipient}.')
-        except Exception as e:
+            messages.success(request, f'Test email sent to {recipient}. If it doesn\'t arrive in a few minutes, check spam.')
+        except Exception as e:  # any failure is shown to the admin testing their settings
             messages.error(request, f'Email failed: {e}')
-        return redirect('org_settings', org_slug=self.org.slug)
+        return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#email")
 
 
 class OrgSettingsView(OrgAdminMixin, View):
@@ -501,16 +628,169 @@ class OrgSettingsView(OrgAdminMixin, View):
         {'name': 'Teal',           'sidebar': '#134e4a', 'accent': '#14b8a6'},
     ]
 
-    def get(self, request, org_slug):
-        from django.shortcuts import render
-        return render(request, self.template_name, {
+    # (key, label, Bootstrap icon, help) for each settings tab; templates/org/settings/_<key>.html.
+    SECTIONS = (
+        ('general', 'General', 'building', 'Your club\'s name and contact details.'),
+        ('appearance', 'Appearance', 'palette', 'Colours and logo for your club\'s Dojo.'),
+        ('features', 'Features', 'toggles', 'Switch off anything your club doesn\'t use and it disappears from Dojo. '
+                                            'Nothing is deleted: switch a feature back on and its data is still there.'),
+        ('fields', 'Fields', 'input-cursor-text', 'Which built-in details Dojo records. Switched-off fields are hidden '
+                                                  'everywhere, but anything already recorded is kept.'),
+        ('security', 'Security', 'shield-lock', ''),
+        ('payments', 'Payments', 'credit-card', 'How members pay their invoices. Every invoice email links to a page '
+                                                'showing the ways you choose here.'),
+        ('email', 'Email', 'envelope', 'How Dojo sends emails to members and staff.'),
+        ('more', 'More', 'three-dots', 'Other settings pages.'),
+    )
+
+    def _payments_context(self):
+        from billing.payment_forms import form_context
+        from billing.payments import settings_for
+        from billing.stripe_setup import check_connection, webhook_url
+        payment_settings = settings_for(self.org)
+        from jobs.registry import is_running
+        context = {**form_context(payment_settings), 'payment_settings': payment_settings,
+                   'stripe_webhook_url': webhook_url(self.org), 'scheduler_running': is_running()}
+        if payment_settings and payment_settings.accept_card and self.request.GET.get('check_stripe'):
+            context['stripe_check'] = check_connection(payment_settings.stripe_secret_key)
+        return context
+
+    def _email_context(self):
+        from mailer.forms import provider_rows
+        from mailer.models import EmailSettings
+        email_settings = EmailSettings.objects.filter(organisation=self.org).first()
+        context = {**provider_rows(email_settings), 'email_settings': email_settings}
+        if email_settings is None:
+            from django.conf import settings as django_settings
+            fallback = django_settings.DOJO_FALLBACK_EMAIL_BACKEND
+            context['email_fallback'] = (
+                'printing emails to the server log instead of sending them' if fallback.endswith('console.EmailBackend')
+                else f'using the server\'s email settings from .env ({django_settings.EMAIL_HOST or fallback})'
+            )
+        if email_settings and self.request.GET.get('check_connection'):
+            from mailer import connectivity
+            context['email_connection_check'] = connectivity.check(email_settings)
+        if email_settings and email_settings.provider == 'dojo_mail':
+            context['email_dns_records'] = email_settings.dns_records()
+            if self.request.GET.get('check_dns'):
+                from mailer import dns_check
+                context['email_dns_check'] = dns_check.check(email_settings)
+        return context
+
+    def _context(self):
+        from .features import feature_rows
+        from .optional_fields import field_groups
+        return {
+            'settings_sections': [section for section in self.SECTIONS
+                                  if section[0] != 'payments' or self.org.has_feature('billing')],
+            'version': get_version_info(),
+            'org_url': self.request.build_absolute_uri(reverse('org_dashboard', kwargs={'org_slug': self.org.slug})),
+            'org_url_display': self.request.get_host() + reverse('org_dashboard', kwargs={'org_slug': self.org.slug}),
+            'releases_url': RELEASES_URL,
             'org': self.org,
             'org_membership': self.org_membership,
             'presets': self.PRESETS,
-        })
+            'feature_rows': feature_rows(self.org.enabled_features),
+            'field_groups': field_groups(self.org.enabled_fields, self.org.settings),
+            'session_timeout_choices': Organisation.SESSION_TIMEOUT_CHOICES,
+            'two_factor_choices': Organisation.TWO_FACTOR_CHOICES,
+            **self._email_context(),
+            **self._payments_context(),
+            'staff_without_two_factor': (
+                OrganisationMember.objects.filter(organisation=self.org, user__two_factor__isnull=True)
+                .select_related('user').order_by('user__first_name', 'user__username')
+            ),
+        }
+
+    def get(self, request, org_slug):
+        from django.shortcuts import render
+        return render(request, self.template_name, self._context())
 
     def post(self, request, org_slug):
         action = request.POST.get('action', 'general')
+
+        if action == 'features':
+            from .features import choices_from_keys
+            self.org.set_features(choices_from_keys(request.POST.getlist('features')))
+            self.org.save(update_fields=['features'])
+            messages.success(request, 'Features saved.')
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#features")
+
+        if action == 'payments':
+            from billing.models import PaymentSettings
+            from billing.payment_forms import apply_post
+            payment_settings = (PaymentSettings.objects.filter(organisation=self.org).first()
+                                or PaymentSettings(organisation=self.org))
+            errors = apply_post(payment_settings, request.POST)
+            for error in errors:
+                messages.error(request, error)
+            if not errors:
+                payment_settings.save()
+                messages.success(request, 'Payment settings saved.')
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#payments")
+
+        if action == 'stripe_webhook':
+            import stripe
+
+            from billing.payments import settings_for
+            from billing.stripe_setup import create_webhook
+            payment_settings = settings_for(self.org)
+            if not (payment_settings and payment_settings.stripe_secret_key):
+                messages.error(request, 'Save your Stripe keys first.')
+            else:
+                try:
+                    secret = create_webhook(self.org, payment_settings.stripe_secret_key)
+                except stripe.error.StripeError as error:
+                    messages.error(request, f'Stripe couldn\'t set up the webhook: {error.user_message or error}')
+                else:
+                    from billing.stripe_setup import WEBHOOK_EVENTS
+                    payment_settings.set_secrets({**payment_settings.get_secrets(), 'stripe_webhook_secret': secret,
+                                                  'stripe_webhook_events': ' '.join(WEBHOOK_EVENTS)})
+                    payment_settings.save(update_fields=['secrets'])
+                    messages.success(request, 'Webhook set up: invoices paid by card will now be marked paid automatically.')
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#payments")
+
+        if action == 'email':
+            from mailer.forms import apply_post
+            from mailer.models import EmailSettings
+            email_settings = (EmailSettings.objects.filter(organisation=self.org).first()
+                              or EmailSettings(organisation=self.org))
+            errors = apply_post(email_settings, request.POST)
+            for error in errors:
+                messages.error(request, error)
+            if not errors:
+                email_settings.save()
+                if email_settings.provider == 'dojo_mail':
+                    email_settings.dkim_private_key(create=True)
+                messages.success(request, f'Email settings saved: sending with {email_settings.provider_info.label}. '
+                                          'Send a test email to check.')
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#email")
+
+        if action == 'security':
+            try:
+                minutes = int(request.POST.get('session_timeout_minutes', ''))
+            except ValueError:
+                minutes = None
+            two_factor = request.POST.get('two_factor', self.org.two_factor_policy)
+            if minutes not in {m for m, _ in Organisation.SESSION_TIMEOUT_CHOICES}:
+                messages.error(request, 'Choose one of the listed times.')
+            elif two_factor not in dict(Organisation.TWO_FACTOR_CHOICES):
+                messages.error(request, 'Choose who must use two-step sign-in.')
+            else:
+                self.org.settings = {**(self.org.settings or {}), 'session_timeout_minutes': minutes,
+                                     'two_factor': two_factor}
+                self.org.save(update_fields=['settings'])
+                messages.success(request, 'Security settings saved.')
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#security")
+
+        if action == 'fields':
+            from .optional_fields import choices_from_keys as field_choices
+            from .optional_fields import labels_from_post
+            self.org.set_optional_fields(field_choices(request.POST.getlist('optional_fields')))
+            self.org.settings = {**(self.org.settings or {}), **labels_from_post(request.POST)}
+            self.org.save(update_fields=['optional_fields', 'settings'])
+            messages.success(request, 'Fields saved.')
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#fields")
 
         if action == 'theme':
             sidebar_color = request.POST.get('sidebar_color', '#1E3A5F').strip()
@@ -533,10 +813,21 @@ class OrgSettingsView(OrgAdminMixin, View):
             self.org.save(update_fields=['settings'])
 
             if 'logo' in request.FILES:
-                self.org.logo = request.FILES['logo']
-                self.org.save(update_fields=['logo'])
+                from .branding import image_luminance, validate_logo
+                upload = request.FILES['logo']
+                error = validate_logo(upload)
+                if error:
+                    messages.error(request, error)
+                    return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#appearance")
+                if self.org.logo:
+                    self.org.logo.delete(save=False)
+                self.org.logo = upload
+                self.org.settings = {**(self.org.settings or {}), 'logo_luminance': round(image_luminance(upload), 3)}
+                self.org.save(update_fields=['logo', 'settings'])
             if request.POST.get('remove_logo'):
-                self.org.logo.delete(save=True)
+                self.org.logo.delete(save=False)
+                self.org.settings = {k: v for k, v in (self.org.settings or {}).items() if k != 'logo_luminance'}
+                self.org.save(update_fields=['logo', 'settings'])
 
             dev_mode = request.POST.get('dev_mode') == '1'
             if dev_mode:
@@ -544,7 +835,7 @@ class OrgSettingsView(OrgAdminMixin, View):
                 self.org.save(update_fields=['custom_css'])
 
             messages.success(request, 'Theme saved.')
-            return redirect('org_settings', org_slug=self.org.slug)
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#appearance")
 
         # General settings
         name = request.POST.get('name', '').strip()
@@ -554,25 +845,24 @@ class OrgSettingsView(OrgAdminMixin, View):
 
         if not name:
             messages.error(request, 'Organisation name is required.')
-            return render(request, self.template_name, {
-                'org': self.org,
-                'org_membership': self.org_membership,
-                'presets': self.PRESETS,
-            })
+            return render(request, self.template_name, self._context())
 
         self.org.name = name
         self.org.email = email
         self.org.phone = phone
         self.org.website = website
-        self.org.save(update_fields=['name', 'email', 'phone', 'website'])
+        short_name = request.POST.get('short_name', '').strip()[:40]
+        self.org.settings = {k: v for k, v in (self.org.settings or {}).items() if k != 'short_name'}
+        if short_name:
+            self.org.settings['short_name'] = short_name
+        self.org.save(update_fields=['name', 'email', 'phone', 'website', 'settings'])
         messages.success(request, 'Settings saved.')
-        return redirect('org_settings', org_slug=self.org.slug)
+        return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#general")
 
 
 class CustomFieldSettingsView(OrgAdminMixin, View):
     def get(self, request, org_slug):
         from django.shortcuts import render
-        from members.models import CustomField
         fields = CustomField.objects.filter(organisation=self.org)
         return render(request, 'org/custom_fields.html', {
             'org': self.org,
@@ -599,8 +889,23 @@ class CustomFieldSettingsView(OrgAdminMixin, View):
                     field_type=field_type,
                     options=options,
                     order=order,
+                    show_on_registers=(
+                        field_type == CustomField.FieldType.BOOLEAN and 'show_on_registers' in request.POST
+                    ),
                 )
                 messages.success(request, f'Field "{name}" added.')
+
+        elif action == 'show_on_registers':
+            field = get_object_or_404(
+                CustomField, pk=request.POST.get('field_pk'), organisation=self.org,
+                field_type=CustomField.FieldType.BOOLEAN,
+            )
+            field.show_on_registers = request.POST.get('value') == '1'
+            field.save(update_fields=['show_on_registers'])
+            if field.show_on_registers:
+                messages.success(request, f'"{field.name}" now shows on class pages and registers.')
+            else:
+                messages.success(request, f'"{field.name}" no longer shows on registers.')
 
         elif action == 'delete':
             field_pk = request.POST.get('field_pk')
@@ -612,40 +917,33 @@ class CustomFieldSettingsView(OrgAdminMixin, View):
 
 
 class AnnouncementListView(OrgMixin, View):
-    """Any org member can view the announcement history. Sending is open to
-    coaches too, but scoped to only the classes they're assigned to — the
-    "all active members" option is admin-only."""
+    """
+    All staff can send announcements. Coaches can only send to classes they
+    coach unless granted `message_all_members`, which also unlocks sending
+    to every active member.
+    """
+    required_feature = 'announcements'
 
-    def _is_admin(self, request):
-        return request.user.is_superuser or (
-            self.org_membership and self.org_membership.role == 'org_admin'
-        )
+    def _sendable_classes(self):
+        from classes.models import Class
+        classes = Class.objects.filter(organisation=self.org)
+        if not self.can('message_all_members'):
+            classes = classes.filter(pk__in=self.coached_class_ids())
+        return classes.order_by('name')
 
     def get(self, request, org_slug):
-        from classes.models import Class
-        is_admin = self._is_admin(request)
         announcements = Announcement.objects.filter(organisation=self.org)
-        if is_admin:
-            classes = Class.objects.filter(organisation=self.org).order_by('name')
-        else:
-            classes = Class.objects.filter(
-                organisation=self.org, coaches__user=request.user,
-            ).distinct().order_by('name')
+        classes = self._sendable_classes()
         return render(request, 'org/announcements.html', {
             'org': self.org,
             'org_membership': self.org_membership,
             'announcements': announcements,
             'classes': classes,
-            'is_admin': is_admin,
         })
 
     def post(self, request, org_slug):
-        from classes.models import Class, ClassMember
+        from classes.models import ClassMember
         from members.models import Member
-        from django.core.mail import EmailMultiAlternatives
-        from django.template.loader import render_to_string
-
-        is_admin = self._is_admin(request)
 
         subject = request.POST.get('subject', '').strip()
         body = request.POST.get('body', '').strip()
@@ -656,24 +954,14 @@ class AnnouncementListView(OrgMixin, View):
             messages.error(request, 'Subject and body are required.')
             return redirect('org_announcements', org_slug=self.org.slug)
 
-        if not is_admin:
-            # Coaches can only ever send to a class they're assigned to — never "all
-            # active members" — regardless of what the submitted form claims.
+        if not self.can('message_all_members'):
             recipient_type = 'class'
+
+        if recipient_type == 'class':
             if not class_pk:
                 messages.error(request, 'Select a class to send to.')
                 return redirect('org_announcements', org_slug=self.org.slug)
-            cls = Class.objects.filter(
-                pk=class_pk, organisation=self.org, coaches__user=request.user,
-            ).first()
-            if not cls:
-                messages.error(request, "You can only send announcements to classes you're assigned to.")
-                return redirect('org_announcements', org_slug=self.org.slug)
-            member_ids = ClassMember.objects.filter(assigned_class=cls).values_list('member_id', flat=True)
-            members = Member.objects.filter(pk__in=member_ids, is_active=True)
-            label = f'Class: {cls.name}'
-        elif recipient_type == 'class' and class_pk:
-            cls = get_object_or_404(Class, pk=class_pk, organisation=self.org)
+            cls = get_object_or_404(self._sendable_classes(), pk=class_pk)
             member_ids = ClassMember.objects.filter(assigned_class=cls).values_list('member_id', flat=True)
             members = Member.objects.filter(pk__in=member_ids, is_active=True)
             label = f'Class: {cls.name}'
@@ -682,10 +970,8 @@ class AnnouncementListView(OrgMixin, View):
             label = 'All active members'
 
         sent = 0
-        org_name = self.org.name
         for member in members:
             recipient = member.email
-            has_guardians = member.guardians.exists()
             if not recipient:
                 guardian = member.guardians.filter(email__gt='').first()
                 if guardian:
@@ -693,26 +979,12 @@ class AnnouncementListView(OrgMixin, View):
             if not recipient:
                 continue
 
-            html_body = render_to_string('emails/announcement.html', {
-                'member': member,
-                'org_name': org_name,
-                'org_email': self.org.email,
-                'subject': subject,
-                'body': body,
-                'has_guardians': has_guardians,
-            })
-            text_body = f"{'Dear guardian of ' + member.name if has_guardians and not member.email else 'Hi ' + member.name},\n\n{body}\n\n{org_name}"
-            msg = EmailMultiAlternatives(
-                subject=subject,
-                body=text_body,
-                from_email=None,
-                to=[recipient],
-            )
-            msg.attach_alternative(html_body, 'text/html')
             try:
-                msg.send()
+                compose.send(self.org, 'announcement', [recipient],
+                             {**compose.member_values(member), 'title': subject},
+                             {'message': email_blocks.message(body)})
                 sent += 1
-            except Exception:
+            except Exception:  # one bad address mustn't stop the rest of the announcement
                 pass
 
         Announcement.objects.create(
@@ -756,32 +1028,23 @@ class CalendarEventsView(OrgMixin, View):
             qs = qs.filter(assigned_class__coaches__user=request.user)
 
         from django.urls import reverse
-
-        # A session's own leader wins; falling back to the class's default leader
-        # means sessions show a leader on the calendar even before anyone has
-        # opened that specific session's register yet.
         sessions = list(qs)
-        effective_leader_ids = {
-            (s.leader_id or s.assigned_class.default_leader_id)
-            for s in sessions
-            if (s.leader_id or s.assigned_class.default_leader_id)
-        }
-        leader_colours = {}
-        if effective_leader_ids:
-            leader_colours = dict(
-                OrganisationMember.objects.filter(
-                    organisation=self.org, user_id__in=effective_leader_ids,
-                ).exclude(calendar_colour='').values_list('user_id', 'calendar_colour')
-            )
-
+        # A session's own leader, else the class's usual one, coloured by their chosen colour.
+        leader_colours = dict(
+            OrganisationMember.objects.filter(organisation=self.org)
+            .exclude(calendar_colour='')
+            .values_list('user_id', 'calendar_colour')
+        )
         events = []
         for session in sessions:
-            title = session.assigned_class.name
             leader = session.leader or session.assigned_class.default_leader
+            if session.is_cancelled:
+                color = '#dc3545'
+            else:
+                color = leader_colours.get(leader.pk if leader else None, '#212529')
+            title = session.assigned_class.name
             if leader:
-                leader_name = leader.get_full_name() or leader.username
-                title += f' — {leader_name}'
-
+                title += f' — {leader.get_full_name() or leader.username}'
             if session.is_cancelled:
                 color = '#dc3545'
                 title += ' (cancelled)'
@@ -827,36 +1090,13 @@ class CalendarEventsView(OrgMixin, View):
         return JsonResponse(events, safe=False)
 
 
-def _linear_forecast(values, periods_ahead):
-    """
-    Least-squares straight-line trend fitted over `values` (chronological,
-    one point per month), extrapolated `periods_ahead` further months.
-    No external dependencies (numpy etc.) — just the standard slope/intercept
-    formula over an evenly-spaced x-axis of 0..len(values)-1.
-
-    Falls back to flat-lining the average when there isn't enough history
-    (0 or 1 months) to fit a trend from, and never forecasts below zero —
-    a negative revenue/expense projection isn't meaningful here.
-    """
-    n = len(values)
-    if n == 0:
-        return [0.0] * periods_ahead
-    if n < 2:
-        return [round(values[0], 2)] * periods_ahead
-
-    x_mean = (n - 1) / 2
-    y_mean = sum(values) / n
-    numerator = sum((x - x_mean) * (y - y_mean) for x, y in enumerate(values))
-    denominator = sum((x - x_mean) ** 2 for x in range(n))
-    slope = numerator / denominator if denominator else 0
-    intercept = y_mean - slope * x_mean
-
-    return [round(max(0.0, intercept + slope * (n + i)), 2) for i in range(periods_ahead)]
-
-
 class FinancialReportView(OrgAdminMixin, View):
+    # Admin-only in this fork, as before (DojoUK also opens it to staff granted
+    # Manage billing: CapabilityMixin with required_capabilities = ('manage_billing',)).
+    required_feature = 'billing'
+
     def get(self, request, org_slug):
-        from billing.models import Invoice, Payment, Expense
+        from billing.models import Invoice, Payment
         from django.db.models.functions import TruncMonth
         import json
 
@@ -887,47 +1127,8 @@ class FinancialReportView(OrgAdminMixin, View):
         )
         revenue_map = {r['month'].date().replace(day=1): float(r['total']) for r in monthly_data}
 
-        monthly_expense_data = (
-            Expense.objects.filter(organisation=self.org)
-            .annotate(month=TruncMonth('expense_date'))
-            .values('month')
-            .annotate(total=Sum('amount'))
-            .order_by('month')
-        )
-        expense_map = {r['month'].replace(day=1): float(r['total']) for r in monthly_expense_data}
-
         chart_labels = [m.strftime('%b %Y') for m in months]
         chart_data = [revenue_map.get(m, 0) for m in months]
-        expense_chart_data = [expense_map.get(m, 0) for m in months]
-        profit_chart_data = [round(chart_data[i] - expense_chart_data[i], 2) for i in range(len(months))]
-
-        # Forecast — projects revenue (bucketed by the date funds were actually
-        # received, i.e. Payment.paid_at, same basis as chart_data above) and
-        # expenses 6 months beyond the trailing 12 months of history above.
-        FORECAST_MONTHS = 6
-        forecast_month_dates = []
-        cursor = months[-1]
-        for _ in range(FORECAST_MONTHS):
-            y, m = cursor.year, cursor.month + 1
-            if m > 12:
-                y, m = y + 1, 1
-            cursor = date(y, m, 1)
-            forecast_month_dates.append(cursor)
-        forecast_labels = [m.strftime('%b %Y') for m in forecast_month_dates]
-
-        forecast_revenue = _linear_forecast(chart_data, FORECAST_MONTHS)
-        forecast_expenses = _linear_forecast(expense_chart_data, FORECAST_MONTHS)
-
-        forecast_chart_labels = chart_labels + forecast_labels
-        # Actual series trail off with nulls over the forecast months (Chart.js
-        # skips them, leaving a gap); the forecast series is null-padded over the
-        # historical months except for one bridge point — a repeat of the last
-        # actual value — so its dashed line picks up exactly where the solid
-        # actual line ends, instead of starting from a disconnected origin.
-        revenue_actual_series = chart_data + [None] * FORECAST_MONTHS
-        revenue_forecast_series = [None] * (len(months) - 1) + [chart_data[-1]] + forecast_revenue
-        expense_actual_series = expense_chart_data + [None] * FORECAST_MONTHS
-        expense_forecast_series = [None] * (len(months) - 1) + [expense_chart_data[-1]] + forecast_expenses
 
         outstanding_members = (
             Invoice.objects.filter(organisation=self.org, status=Invoice.Status.UNPAID)
@@ -946,48 +1147,51 @@ class FinancialReportView(OrgAdminMixin, View):
             organisation=self.org, status=Invoice.Status.UNPAID
         ).aggregate(t=Sum('amount'))['t'] or 0
 
-        total_expenses_ytd = Expense.objects.filter(
-            organisation=self.org,
-            expense_date__year=today.year,
-        ).aggregate(t=Sum('amount'))['t'] or 0
+        from decimal import Decimal
+        from billing.forecast import linear_forecast, next_months
+        from billing.models import Expense
+        expenses = Expense.objects.filter(organisation=self.org)
+        expense_map = {
+            r['month'].replace(day=1): float(r['total'])
+            for r in expenses.annotate(month=TruncMonth('expense_date')).values('month').annotate(total=Sum('amount'))
+        }
+        expense_chart_data = [expense_map.get(m, 0) for m in months]
+        profit_chart_data = [round(revenue - spent, 2) for revenue, spent in zip(chart_data, expense_chart_data, strict=True)]
 
-        total_profit_ytd = float(total_revenue_ytd) - float(total_expenses_ytd)
-
-        expenses_this_month = Expense.objects.filter(
-            organisation=self.org,
-            expense_date__year=today.year,
-            expense_date__month=today.month,
-        ).aggregate(t=Sum('amount'))['t'] or 0
-
+        total_expenses_ytd = expenses.filter(expense_date__year=today.year).aggregate(t=Sum('amount'))['t'] or Decimal('0')
         revenue_this_month = Payment.objects.filter(
-            invoice__organisation=self.org,
-            paid_at__year=today.year,
-            paid_at__month=today.month,
-        ).aggregate(t=Sum('amount'))['t'] or 0
+            invoice__organisation=self.org, paid_at__year=today.year, paid_at__month=today.month,
+        ).aggregate(t=Sum('amount'))['t'] or Decimal('0')
+        expenses_this_month = expenses.filter(
+            expense_date__year=today.year, expense_date__month=today.month,
+        ).aggregate(t=Sum('amount'))['t'] or Decimal('0')
 
-        profit_this_month = float(revenue_this_month) - float(expenses_this_month)
+        # Projection: revenue (by payment date, as above) and expenses six months on.
+        # The dashed forecast lines start from the last actual month so they join up.
+        ahead = 6
+        forecast_labels = chart_labels + [m.strftime('%b %Y') for m in next_months(months[-1], ahead)]
+        gap = [None] * (len(months) - 1)
 
         return render(request, 'org/finance.html', {
             'org': self.org,
             'org_membership': self.org_membership,
             'chart_labels': json.dumps(chart_labels),
             'chart_data': json.dumps(chart_data),
-            'expense_chart_data': json.dumps(expense_chart_data),
-            'profit_chart_data': json.dumps(profit_chart_data),
-            'forecast_chart_labels': json.dumps(forecast_chart_labels),
-            'revenue_actual_series': json.dumps(revenue_actual_series),
-            'revenue_forecast_series': json.dumps(revenue_forecast_series),
-            'expense_actual_series': json.dumps(expense_actual_series),
-            'expense_forecast_series': json.dumps(expense_forecast_series),
             'outstanding_members': outstanding_members,
             'total_revenue_ytd': total_revenue_ytd,
             'total_outstanding': total_outstanding,
-            'total_expenses_ytd': total_expenses_ytd,
-            'total_profit_ytd': total_profit_ytd,
-            'revenue_this_month': revenue_this_month,
-            'expenses_this_month': expenses_this_month,
-            'profit_this_month': profit_this_month,
             'today': today,
+            'total_expenses_ytd': total_expenses_ytd,
+            'total_profit_ytd': Decimal(total_revenue_ytd) - Decimal(total_expenses_ytd),
+            'profit_this_month': Decimal(revenue_this_month) - Decimal(expenses_this_month),
+            'profit_chart_data': json.dumps(profit_chart_data),
+            'forecast_chart_labels': json.dumps(forecast_labels),
+            'revenue_actual_series': json.dumps(chart_data + [None] * ahead),
+            'revenue_forecast_series': json.dumps(gap + [chart_data[-1]] + linear_forecast(chart_data, ahead)),
+            'expense_actual_series': json.dumps(expense_chart_data + [None] * ahead),
+            'expense_forecast_series': json.dumps(
+                gap + [expense_chart_data[-1]] + linear_forecast(expense_chart_data, ahead),
+            ),
         })
 
 
@@ -1005,6 +1209,8 @@ class AccountView(OrgMixin, View):
             'memberships': request.user.organisation_memberships.select_related('organisation').order_by('organisation__name'),
             'holidays': holidays,
             'today': date.today(),
+            'two_factor': device_for(request.user),
+            'two_factor_required': two_factor_required(request.user),
             'accent_theme_choices': OrganisationMember.AccentTheme.choices,
         })
 
@@ -1053,66 +1259,53 @@ class AccountView(OrgMixin, View):
             messages.success(request, 'Holiday removed.')
             return redirect('account_settings', org_slug=self.org.slug)
 
-        elif action == 'update_emergency_contacts':
+        elif action == 'update_appearance':
             if not self.org_membership:
                 messages.error(request, "You're not a staff member of this organisation.")
                 return redirect('account_settings', org_slug=self.org.slug)
-
-            # Scoped to self.org_membership — a coach can only ever edit their own record here.
-            self.org_membership.emergency_contact_name = request.POST.get('emergency_contact_name', '').strip()
-            self.org_membership.emergency_contact_phone = request.POST.get('emergency_contact_phone', '').strip()
-            self.org_membership.emergency_contact_2_name = request.POST.get('emergency_contact_2_name', '').strip()
-            self.org_membership.emergency_contact_2_phone = request.POST.get('emergency_contact_2_phone', '').strip()
-            self.org_membership.save(update_fields=[
-                'emergency_contact_name', 'emergency_contact_phone',
-                'emergency_contact_2_name', 'emergency_contact_2_phone',
-            ])
-            messages.success(request, 'Emergency contacts updated.')
+            accent_theme = request.POST.get('accent_theme', '').strip()
+            if accent_theme not in OrganisationMember.AccentTheme.values:
+                messages.error(request, 'Choose one of the colour themes.')
+                return redirect('account_settings', org_slug=self.org.slug)
+            # Only ever the signed-in person's own view.
+            self.org_membership.dark_mode = request.POST.get('dark_mode') == '1'
+            self.org_membership.accent_theme = accent_theme
+            self.org_membership.save(update_fields=['dark_mode', 'accent_theme'])
+            messages.success(request, 'Appearance updated.')
             return redirect('account_settings', org_slug=self.org.slug)
 
         elif action == 'update_calendar_colour':
             if not self.org_membership:
                 messages.error(request, "You're not a staff member of this organisation.")
                 return redirect('account_settings', org_slug=self.org.slug)
-
             import re
             colour = request.POST.get('calendar_colour', '').strip()
-            if colour and not re.match(r'^#[0-9a-fA-F]{6}$', colour):
-                messages.error(request, 'Enter a valid colour (e.g. #2563EB).')
+            if request.POST.get('clear'):
+                colour = ''
+            if colour and not re.fullmatch(r'#[0-9a-fA-F]{6}', colour):
+                messages.error(request, 'Choose a colour like #2563EB.')
                 return redirect('account_settings', org_slug=self.org.slug)
-
-            # Scoped to self.org_membership — a coach can only ever set their own colour here.
-            self.org_membership.calendar_colour = colour
+            # Only ever the signed-in person's own colour.
+            self.org_membership.calendar_colour = colour.upper()
             self.org_membership.save(update_fields=['calendar_colour'])
             messages.success(request, 'Calendar colour updated.')
             return redirect('account_settings', org_slug=self.org.slug)
 
-        elif action == 'update_dark_mode':
+        elif action == 'update_emergency_contacts':
             if not self.org_membership:
                 messages.error(request, "You're not a staff member of this organisation.")
                 return redirect('account_settings', org_slug=self.org.slug)
-
-            # Scoped to self.org_membership — a coach can only ever set their own preference here.
-            self.org_membership.dark_mode = request.POST.get('dark_mode') == '1'
-            self.org_membership.save(update_fields=['dark_mode'])
-            messages.success(request, 'Appearance updated.')
-            return redirect('account_settings', org_slug=self.org.slug)
-
-        elif action == 'update_accent_theme':
-            if not self.org_membership:
-                messages.error(request, "You're not a staff member of this organisation.")
-                return redirect('account_settings', org_slug=self.org.slug)
-
-            accent_theme = request.POST.get('accent_theme', '').strip()
-            valid_values = {choice for choice, _ in OrganisationMember.AccentTheme.choices}
-            if accent_theme not in valid_values:
-                messages.error(request, 'Unrecognised theme.')
-                return redirect('account_settings', org_slug=self.org.slug)
-
-            # Scoped to self.org_membership — a coach can only ever set their own preference here.
-            self.org_membership.accent_theme = accent_theme
-            self.org_membership.save(update_fields=['accent_theme'])
-            messages.success(request, 'Appearance updated.')
+            # Scoped to the logged-in user's own membership, and only the
+            # emergency contact fields the club has switched on.
+            from .optional_fields import STAFF, enabled_model_fields
+            fields = enabled_model_fields(
+                self.org, STAFF, keys={'staff_emergency_contact', 'staff_emergency_contact_2'},
+            )
+            for name in fields:
+                setattr(self.org_membership, name, request.POST.get(name, '').strip())
+            if fields:
+                self.org_membership.save(update_fields=fields)
+            messages.success(request, 'Emergency contacts updated.')
             return redirect('account_settings', org_slug=self.org.slug)
 
         user = request.user
@@ -1130,6 +1323,13 @@ class AccountView(OrgMixin, View):
         user.save(update_fields=['first_name', 'last_name', 'email'])
         messages.success(request, 'Account details updated.')
         return redirect('account_settings', org_slug=self.org.slug)
+
+
+class KeepAliveView(OrgMixin, View):
+    """Pinged by the page while someone is active, so the inactivity timer restarts."""
+
+    def post(self, request, org_slug):
+        return HttpResponse(status=204)
 
 
 class AccountPasswordChangeView(OrgMixin, PasswordChangeView):

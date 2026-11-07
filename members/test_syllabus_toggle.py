@@ -15,7 +15,7 @@ from progression.models import (
 class SyllabusToggleTests(TestCase):
     def setUp(self):
         user = get_user_model().objects.create_user('admin', password='pw')
-        self.org = Organisation.objects.create(name='Club', slug='club')
+        self.org = Organisation.objects.create(name='Club', slug='club', features={'grades': True})  # belts: an optional feature in DojoUK
         OrganisationMember.objects.create(user=user, organisation=self.org, role=OrganisationMember.Role.ORG_ADMIN)
         self.member = Member.objects.create(organisation=self.org, name='Sam')
         section = SyllabusSection.objects.create(organisation=self.org, name='White belt')
@@ -32,6 +32,7 @@ class SyllabusToggleTests(TestCase):
         self.assertIn('Kicks', html)
         self.assertIn('Front kick', html)
         self.assertIn('hx-post', html)
+        self.assertIn('syllabus-two-col', html)
 
     def test_htmx_toggle_returns_item_without_redirect(self):
         resp = self.client.post(self.url, HTTP_HX_REQUEST='true')
@@ -54,3 +55,25 @@ class SyllabusToggleTests(TestCase):
         html = self.client.get(reverse('portal_syllabus', kwargs={'token': self.member.token})).content.decode()
         self.assertIn('Kicks', html)
         self.assertIn('Front kick', html)
+        self.assertIn('syllabus-two-col', html)
+
+
+class SplitSyllabusColumnsTests(TestCase):
+    def split(self, *sizes):
+        from progression.models import split_syllabus_columns
+        groups = [{'subsection': name, 'items': [{'item': None}] * n} for name, n in sizes]
+        return [[(g['subsection'], len(g['items'])) for g in col] for col in split_syllabus_columns(groups)]
+
+    def test_subsections_kept_whole_and_balanced(self):
+        self.assertEqual(self.split(('A', 3), ('B', 3), ('C', 4), ('D', 2)),
+                         [[('A', 3), ('B', 3)], [('C', 4), ('D', 2)]])
+
+    def test_large_subsection_is_not_split(self):
+        self.assertEqual(self.split(('A', 10), ('B', 2), ('C', 2)),
+                         [[('A', 10)], [('B', 2), ('C', 2)]])
+
+    def test_ungrouped_items_can_split(self):
+        self.assertEqual(self.split((None, 9)), [[(None, 4)], [(None, 5)]])
+
+    def test_empty(self):
+        self.assertEqual(self.split(), [[], []])

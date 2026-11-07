@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Invoice, InvoiceItem, Payment, BillingPolicy, OrgTerm, PolicyDiscount, MemberDiscount, Expense
+from .models import Expense, Invoice, InvoiceItem, Payment, BillingPolicy, OrgTerm, PolicyDiscount, MemberDiscount
 
 
 class PaymentInline(admin.TabularInline):

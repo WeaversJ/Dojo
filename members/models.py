@@ -73,6 +73,13 @@ class Member(models.Model):
         for note in self.notes.all():
             note.delete()
 
+    def session_counts(self):
+        """Total sessions attended, and sessions helped on (None if the member has never been a helper)."""
+        attended = self.attendance.filter(present=True).count()
+        helped = self.helped_sessions.filter(present=True).count()
+        is_helper = helped > 0 or self.helping_classes.exists() or self.helped_sessions.exists()
+        return {'attended': attended, 'helped': helped if is_helper else None}
+
     def __str__(self):
         return self.name
 
@@ -103,6 +110,11 @@ class CustomField(models.Model):
     field_type = models.CharField(max_length=20, choices=FieldType.choices)
     options = models.JSONField(default=list, blank=True)
     order = models.PositiveIntegerField(default=0)
+    show_on_registers = models.BooleanField(
+        default=False,
+        help_text='Yes/no fields only: members ticked "yes" get a badge with the field name on class '
+                  'pages and registers, e.g. "Photo consent".',
+    )
 
     def __str__(self):
         return f"{self.organisation} — {self.name}"

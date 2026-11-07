@@ -1,15 +1,19 @@
 {% extends 'org/base.html' %}
+{% load money %}
 
 {% block title %}Expenses{% endblock %}
 
 {% block page_title %}Expenses{% endblock %}
-{% block page_subtitle %}Track club outgoings — feeds into the monthly profit figure on Finance{% endblock %}
+{% block page_subtitle %}Club outgoings, used for the profit figures on Finance{% endblock %}
 
 {% block page_actions %}
 <a href="{% url 'org_finance' org_slug=org.slug %}" class="btn btn-outline-secondary btn-sm">
     <i class="bi bi-graph-up me-1"></i> Finance
 </a>
-<button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addExpenseModal">
+<a href="{% url 'org_import_kind' org_slug=org.slug kind='expenses' %}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-upload me-1"></i> Import
+</a>
+<button class="btn btn-dark btn-sm" data-bs-toggle="modal" data-bs-target="#addExpenseModal">
     <i class="bi bi-plus-lg me-1"></i> Add expense
 </button>
 {% endblock %}
@@ -19,13 +23,13 @@
 <div class="row g-3 mb-4">
     <div class="col-sm-6">
         <div class="card border-0 shadow-sm text-center py-3">
-            <div class="display-6 fw-bold text-danger">£{{ total_this_month|floatformat:2 }}</div>
+            <div class="display-6 fw-bold text-danger">{{ total_this_month|pounds }}</div>
             <div class="small text-muted mt-1">This month</div>
         </div>
     </div>
     <div class="col-sm-6">
         <div class="card border-0 shadow-sm text-center py-3">
-            <div class="display-6 fw-bold text-danger">£{{ total_this_year|floatformat:2 }}</div>
+            <div class="display-6 fw-bold text-danger">{{ total_this_year|pounds }}</div>
             <div class="small text-muted mt-1">Year to date</div>
         </div>
     </div>
@@ -35,7 +39,7 @@
     <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h6 class="mb-0">All expenses</h6>
         <form method="get" class="d-flex gap-2">
-            <select name="category" class="form-select form-select-sm" onchange="this.form.submit()">
+            <select name="category" class="form-select form-select-sm" onchange="this.form.submit()" aria-label="Category">
                 <option value="">All categories</option>
                 {% for value, label in categories %}
                 <option value="{{ value }}" {% if category_filter == value %}selected{% endif %}>{{ label }}</option>
@@ -66,7 +70,7 @@
                         {% if expense.notes %}<div class="text-muted" style="font-size:0.75rem;">{{ expense.notes }}</div>{% endif %}
                     </td>
                     <td class="py-2 small"><span class="badge bg-secondary-subtle text-secondary">{{ expense.get_category_display }}</span></td>
-                    <td class="py-2 small text-end fw-semibold">£{{ expense.amount|floatformat:2 }}</td>
+                    <td class="py-2 small text-end fw-semibold">{{ expense.amount|pounds }}</td>
                     <td class="py-2 pe-3 text-end">
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#editExpenseModal{{ expense.pk }}">
                             <i class="bi bi-pencil"></i>
@@ -141,7 +145,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+                    <button type="submit" class="btn btn-dark btn-sm">Save changes</button>
                 </div>
             </form>
         </div>
@@ -187,7 +191,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary btn-sm">Add expense</button>
+                    <button type="submit" class="btn btn-dark btn-sm">Add expense</button>
                 </div>
             </form>
         </div>

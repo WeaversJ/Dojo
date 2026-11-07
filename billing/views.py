@@ -2,20 +2,21 @@ from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timezone
 
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 from django.views.generic import DetailView, ListView
 
-from dojo.mixins import OrgAdminMixin, OrgMixin
+from classes.models import ClassMember
+from dojo.mixins import CapabilityMixin, OrgAdminMixin
 from members.models import Member
 from inventory.models import Product, ProductVariant, StockMovement
 
-from .models import (
-    Invoice, InvoiceItem, Payment, BillingPolicy, OrgTerm, PolicyDiscount, MemberDiscount, Expense,
-    apply_member_credit,
-)
+from .credit import apply_member_credit
+from .models import Expense, Invoice, InvoiceItem, Payment, BillingPolicy, OrgTerm, PolicyDiscount, MemberDiscount
+from members.navigation import redirect_to_member
 
 
 class InsufficientStockError(Exception):
@@ -26,17 +27,41 @@ class InsufficientStockError(Exception):
         super().__init__('; '.join(errors))
 
 
-class InvoiceListView(OrgMixin,ListView):
+class BillingManagerMixin(CapabilityMixin):
+    """Org-wide billing: org admins and staff granted `manage_billing`."""
+    required_feature = 'billing'
+    required_capabilities = ('manage_billing',)
+
+
+class InvoiceAccessMixin(CapabilityMixin):
+    """
+    Viewing invoices and taking payments. Staff with only `take_payments`
+    are limited to invoices for members enrolled in a class they coach.
+    """
+    required_feature = 'billing'
+    required_capabilities = ('manage_billing', 'take_payments')
+
+    def invoice_queryset(self):
+        qs = Invoice.objects.filter(organisation=self.org)
+        if not self.can('manage_billing'):
+            member_ids = ClassMember.objects.filter(
+                assigned_class_id__in=self.coached_class_ids(),
+            ).values('member_id')
+            qs = qs.filter(member_id__in=member_ids)
+        return qs
+
+
+class InvoiceListView(InvoiceAccessMixin, ListView):
     template_name = 'billing/list.html'
     context_object_name = 'invoices'
     paginate_by = 50
 
     def get_queryset(self):
         qs = (
-            Invoice.objects.filter(organisation=self.org)
+            self.invoice_queryset()
             .select_related('member')
             .annotate(paid_total=Sum('payments__amount'))
-            .order_by('-due_date', 'member__name')
+            .order_by('-due_date', 'member__name', '-pk')
         )
         status = self.request.GET.get('status', '')
         if status in ('unpaid', 'paid', 'overdue'):
@@ -48,7 +73,7 @@ class InvoiceListView(OrgMixin,ListView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        base = Invoice.objects.filter(organisation=self.org)
+        base = self.invoice_queryset()
         context['status_filter'] = self.request.GET.get('status', '')
         context['q'] = self.request.GET.get('q', '')
         context['total_unpaid'] = base.filter(status=Invoice.Status.UNPAID).aggregate(t=Sum('amount'))['t'] or 0
@@ -58,8 +83,10 @@ class InvoiceListView(OrgMixin,ListView):
         return context
 
 
-class InvoiceCreateView(OrgMixin,View):
+class InvoiceCreateView(BillingManagerMixin, View):
     def _products_context(self):
+        if not self.org.has_feature('inventory'):
+            return Product.objects.none()
         products = (
             Product.objects.filter(organisation=self.org, is_active=True)
             .prefetch_related('variants')
@@ -85,7 +112,8 @@ class InvoiceCreateView(OrgMixin,View):
 
     def _parse_items(self, request, errors):
         """Read the product-line-item rows from POST. Returns a list of (ProductVariant, quantity)."""
-        variant_ids = request.POST.getlist('item_variant_id')
+        # Product lines only exist while inventory is switched on.
+        variant_ids = request.POST.getlist('item_variant_id') if self.org.has_feature('inventory') else []
         quantities = request.POST.getlist('item_quantity')
         item_rows = []
         for variant_id_raw, quantity_raw in zip(variant_ids, quantities):
@@ -222,7 +250,7 @@ class InvoiceCreateView(OrgMixin,View):
                 # Remaining selected members (only reachable when there are no product items,
                 # since 'all' + products is rejected above) each get their own plain invoice.
                 for member in selected_members[1:]:
-                    extra_invoice = Invoice.objects.create(
+                    extra = Invoice.objects.create(
                         organisation=self.org,
                         member=member,
                         amount=base_amount,
@@ -230,8 +258,8 @@ class InvoiceCreateView(OrgMixin,View):
                         due_date=due_date,
                         notes=notes,
                     )
-                    apply_member_credit(extra_invoice)
-                    created_invoices.append(extra_invoice)
+                    apply_member_credit(extra)
+                    created_invoices.append(extra)
         except InsufficientStockError as e:
             for msg in e.errors:
                 messages.error(request, msg)
@@ -243,12 +271,12 @@ class InvoiceCreateView(OrgMixin,View):
         return redirect('invoice_list', org_slug=self.org.slug)
 
 
-class InvoiceDetailView(OrgMixin,DetailView):
+class InvoiceDetailView(InvoiceAccessMixin, DetailView):
     template_name = 'billing/detail.html'
     context_object_name = 'invoice'
 
     def get_object(self):
-        return get_object_or_404(Invoice, pk=self.kwargs['pk'], organisation=self.org)
+        return get_object_or_404(self.invoice_queryset(), pk=self.kwargs['pk'])
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -258,16 +286,16 @@ class InvoiceDetailView(OrgMixin,DetailView):
         return context
 
 
-class MarkPaidView(OrgMixin,View):
+class MarkPaidView(InvoiceAccessMixin, View):
     def post(self, request, org_slug, pk):
-        invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        invoice = get_object_or_404(self.invoice_queryset(), pk=pk)
         invoice.status = Invoice.Status.PAID
         invoice.save(update_fields=['status'])
         messages.success(request, 'Invoice marked as paid.')
         return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
 
 
-class MarkUnpaidView(OrgMixin,View):
+class MarkUnpaidView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
         invoice.status = Invoice.Status.UNPAID
@@ -276,9 +304,9 @@ class MarkUnpaidView(OrgMixin,View):
         return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
 
 
-class RecordPaymentView(OrgMixin,View):
+class RecordPaymentView(InvoiceAccessMixin, View):
     def post(self, request, org_slug, pk):
-        invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        invoice = get_object_or_404(self.invoice_queryset(), pk=pk)
         amount_raw = request.POST.get('amount', '').strip()
         method = request.POST.get('method', Payment.Method.MANUAL)
         notes = request.POST.get('notes', '').strip()
@@ -312,7 +340,7 @@ class RecordPaymentView(OrgMixin,View):
         return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
 
 
-class BillingExportView(OrgMixin,View):
+class BillingExportView(BillingManagerMixin, View):
     def get(self, request, org_slug):
         import csv
         from django.http import HttpResponse
@@ -340,7 +368,7 @@ class BillingExportView(OrgMixin,View):
         return response
 
 
-class ChaseOverdueView(OrgMixin,View):
+class ChaseOverdueView(BillingManagerMixin, View):
     def post(self, request, org_slug):
         from .emails import send_invoice_email
         overdue = [
@@ -367,7 +395,7 @@ class ChaseOverdueView(OrgMixin,View):
         return redirect('invoice_list', org_slug=self.org.slug)
 
 
-class BulkInvoiceView(OrgMixin,View):
+class BulkInvoiceView(BillingManagerMixin, View):
     template_name = 'billing/bulk_invoice.html'
 
     def _default_due_date(self):
@@ -602,9 +630,13 @@ class BulkInvoiceView(OrgMixin,View):
         return redirect('invoice_list', org_slug=self.org.slug)
 
 
-class SendInvoiceEmailView(OrgMixin,View):
+class SendInvoiceEmailView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        if invoice.run_id and invoice.run.status == 'awaiting_review':
+            messages.error(request, 'This invoice is part of an automatic batch waiting to be checked. '
+                                    'Send the whole batch from Automatic invoices.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         from .emails import send_invoice_email
         try:
             ok, result = send_invoice_email(invoice, request=request)
@@ -617,7 +649,7 @@ class SendInvoiceEmailView(OrgMixin,View):
         return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
 
 
-class SendReminderEmailView(OrgMixin,View):
+class SendReminderEmailView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
         from .emails import send_reminder_email
@@ -634,7 +666,7 @@ class SendReminderEmailView(OrgMixin,View):
 
 # ── Billing Policies ──────────────────────────────────────────────────────────
 
-class BillingPolicyListView(OrgMixin,View):
+class BillingPolicyListView(BillingManagerMixin, View):
     template_name = 'billing/policies.html'
 
     def get(self, request, org_slug):
@@ -648,7 +680,7 @@ class BillingPolicyListView(OrgMixin,View):
         })
 
 
-class BillingPolicyCreateView(OrgMixin,View):
+class BillingPolicyCreateView(BillingManagerMixin, View):
     def post(self, request, org_slug):
         name = request.POST.get('name', '').strip()
         billing_cycle = request.POST.get('billing_cycle', '').strip()
@@ -677,7 +709,7 @@ class BillingPolicyCreateView(OrgMixin,View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class BillingPolicyEditView(OrgMixin,View):
+class BillingPolicyEditView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         policy = get_object_or_404(BillingPolicy, pk=pk, organisation=self.org)
         policy.name = request.POST.get('name', policy.name).strip()
@@ -695,7 +727,7 @@ class BillingPolicyEditView(OrgMixin,View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class BillingPolicyDeleteView(OrgMixin,View):
+class BillingPolicyDeleteView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         policy = get_object_or_404(BillingPolicy, pk=pk, organisation=self.org)
         name = policy.name
@@ -704,7 +736,7 @@ class BillingPolicyDeleteView(OrgMixin,View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class PolicyDiscountCreateView(OrgMixin,View):
+class PolicyDiscountCreateView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         policy = get_object_or_404(BillingPolicy, pk=pk, organisation=self.org)
         name = request.POST.get('name', '').strip()
@@ -734,7 +766,7 @@ class PolicyDiscountCreateView(OrgMixin,View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class PolicyDiscountDeleteView(OrgMixin,View):
+class PolicyDiscountDeleteView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         discount = get_object_or_404(PolicyDiscount, pk=pk, policy__organisation=self.org)
         name = discount.name
@@ -745,7 +777,7 @@ class PolicyDiscountDeleteView(OrgMixin,View):
 
 # ── Org Terms ─────────────────────────────────────────────────────────────────
 
-class OrgTermCreateView(OrgMixin,View):
+class OrgTermCreateView(BillingManagerMixin, View):
     def post(self, request, org_slug):
         name = request.POST.get('name', '').strip()
         start_date_raw = request.POST.get('start_date', '').strip()
@@ -772,7 +804,7 @@ class OrgTermCreateView(OrgMixin,View):
         return redirect('billing_policies', org_slug=self.org.slug)
 
 
-class OrgTermDeleteView(OrgMixin,View):
+class OrgTermDeleteView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         term = get_object_or_404(OrgTerm, pk=pk, organisation=self.org)
         name = term.name
@@ -783,7 +815,7 @@ class OrgTermDeleteView(OrgMixin,View):
 
 # ── Member Discounts ──────────────────────────────────────────────────────────
 
-class MemberDiscountAddView(OrgMixin,View):
+class MemberDiscountAddView(BillingManagerMixin, View):
     def post(self, request, org_slug, member_pk):
         from members.models import Member as MemberModel
         member = get_object_or_404(MemberModel, pk=member_pk, organisation=self.org)
@@ -791,25 +823,55 @@ class MemberDiscountAddView(OrgMixin,View):
         discount = get_object_or_404(PolicyDiscount, pk=discount_id, policy__organisation=self.org)
         MemberDiscount.objects.get_or_create(member=member, discount=discount)
         messages.success(request, f'Discount "{discount.name}" applied to {member.name}.')
-        return redirect('member_detail', org_slug=self.org.slug, pk=member_pk)
+        return redirect_to_member(self.org.slug, member_pk, 'billing')
 
 
-class MemberDiscountRemoveView(OrgMixin,View):
+class MemberDiscountRemoveView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         md = get_object_or_404(MemberDiscount, pk=pk, member__organisation=self.org)
         member_pk = md.member_id
         name = md.discount.name
         md.delete()
         messages.success(request, f'Discount "{name}" removed.')
-        return redirect('member_detail', org_slug=self.org.slug, pk=member_pk)
+        return redirect_to_member(self.org.slug, member_pk, 'billing')
 
 
 # ── Expenses ──────────────────────────────────────────────────────────────────
-# Kept admin-only (unlike the rest of billing) since expenses directly drive the
-# profit figure on the finance report — not part of the "open billing up to
-# coaches" request.
+# Admin-only in this fork, as before: expenses drive the profit figure on the
+# finance report, which coaches don't see. (DojoUK opens them to staff granted
+# Manage billing; switch these views to BillingManagerMixin to do the same.)
 
-class ExpenseListView(OrgAdminMixin, ListView):
+class ExpenseAdminMixin(OrgAdminMixin):
+    required_feature = 'billing'
+
+
+def _expense_fields(request):
+    """(fields, error) from the expense form: description, category, amount, date and notes."""
+    description = request.POST.get('description', '').strip()[:255]
+    category = request.POST.get('category', Expense.Category.OTHER)
+    if category not in Expense.Category.values:
+        category = Expense.Category.OTHER
+    amount_raw = request.POST.get('amount', '').strip()
+    date_raw = request.POST.get('expense_date', '').strip()
+    if not description or not amount_raw or not date_raw:
+        return None, 'Description, amount and date are required.'
+    try:
+        amount = Decimal(amount_raw).quantize(Decimal('0.01'))
+    except InvalidOperation:
+        return None, 'Enter the amount as a number, e.g. 45.00.'
+    if not amount.is_finite() or amount <= 0 or amount >= Decimal('100000000'):
+        return None, 'Enter an amount above £0.'
+    try:
+        expense_date = date.fromisoformat(date_raw)
+    except ValueError:
+        return None, 'Enter a valid date.'
+    return {
+        'description': description, 'category': category, 'amount': amount,
+        'expense_date': expense_date, 'notes': request.POST.get('notes', '').strip(),
+    }, None
+
+
+class ExpenseListView(ExpenseAdminMixin, ListView):
     template_name = 'billing/expenses.html'
     context_object_name = 'expenses'
     paginate_by = 50
@@ -817,7 +879,7 @@ class ExpenseListView(OrgAdminMixin, ListView):
     def get_queryset(self):
         qs = Expense.objects.filter(organisation=self.org).order_by('-expense_date', '-created_at')
         category = self.request.GET.get('category', '')
-        if category:
+        if category in Expense.Category.values:
             qs = qs.filter(category=category)
         return qs
 
@@ -828,93 +890,42 @@ class ExpenseListView(OrgAdminMixin, ListView):
         context['category_filter'] = self.request.GET.get('category', '')
         context['categories'] = Expense.Category.choices
         context['total_this_month'] = base.filter(
-            expense_date__year=today.year, expense_date__month=today.month
-        ).aggregate(t=Sum('amount'))['t'] or 0
-        context['total_this_year'] = base.filter(expense_date__year=today.year).aggregate(t=Sum('amount'))['t'] or 0
+            expense_date__year=today.year, expense_date__month=today.month,
+        ).aggregate(t=Sum('amount'))['t'] or Decimal('0')
+        context['total_this_year'] = base.filter(expense_date__year=today.year).aggregate(t=Sum('amount'))['t'] or Decimal('0')
         context['today'] = today
         return context
 
 
-class ExpenseCreateView(OrgAdminMixin, View):
+class ExpenseCreateView(ExpenseAdminMixin, View):
     def post(self, request, org_slug):
-        description = request.POST.get('description', '').strip()
-        category = request.POST.get('category', Expense.Category.OTHER)
-        amount = request.POST.get('amount', '').strip()
-        expense_date_raw = request.POST.get('expense_date', '').strip()
-        notes = request.POST.get('notes', '').strip()
-
-        if not description or not amount or not expense_date_raw:
-            messages.error(request, 'Description, amount, and date are required.')
-            return redirect('expense_list', org_slug=self.org.slug)
-
-        try:
-            amount_val = Decimal(amount)
-            if amount_val <= 0:
-                raise InvalidOperation
-        except (InvalidOperation, ValueError):
-            messages.error(request, 'Invalid amount — must be a positive number.')
-            return redirect('expense_list', org_slug=self.org.slug)
-
-        try:
-            expense_date = date.fromisoformat(expense_date_raw)
-        except ValueError:
-            messages.error(request, 'Invalid date.')
-            return redirect('expense_list', org_slug=self.org.slug)
-
-        Expense.objects.create(
-            organisation=self.org,
-            description=description,
-            category=category,
-            amount=amount_val,
-            expense_date=expense_date,
-            notes=notes,
-            created_by=request.user,
-        )
-        messages.success(request, f'Expense "{description}" added.')
+        fields, error = _expense_fields(request)
+        if error:
+            messages.error(request, error)
+        else:
+            Expense.objects.create(organisation=self.org, created_by=request.user, **fields)
+            messages.success(request, f'Expense "{fields["description"]}" added.')
         return redirect('expense_list', org_slug=self.org.slug)
 
 
-class ExpenseEditView(OrgAdminMixin, View):
+class ExpenseEditView(ExpenseAdminMixin, View):
     def post(self, request, org_slug, pk):
         expense = get_object_or_404(Expense, pk=pk, organisation=self.org)
-        description = request.POST.get('description', '').strip()
-        category = request.POST.get('category', expense.category)
-        amount = request.POST.get('amount', '').strip()
-        expense_date_raw = request.POST.get('expense_date', '').strip()
-        notes = request.POST.get('notes', '').strip()
-
-        if not description or not amount or not expense_date_raw:
-            messages.error(request, 'Description, amount, and date are required.')
-            return redirect('expense_list', org_slug=self.org.slug)
-
-        try:
-            amount_val = Decimal(amount)
-            if amount_val <= 0:
-                raise InvalidOperation
-        except (InvalidOperation, ValueError):
-            messages.error(request, 'Invalid amount — must be a positive number.')
-            return redirect('expense_list', org_slug=self.org.slug)
-
-        try:
-            expense_date = date.fromisoformat(expense_date_raw)
-        except ValueError:
-            messages.error(request, 'Invalid date.')
-            return redirect('expense_list', org_slug=self.org.slug)
-
-        expense.description = description
-        expense.category = category
-        expense.amount = amount_val
-        expense.expense_date = expense_date
-        expense.notes = notes
-        expense.save()
-        messages.success(request, 'Expense updated.')
+        fields, error = _expense_fields(request)
+        if error:
+            messages.error(request, error)
+        else:
+            for name, value in fields.items():
+                setattr(expense, name, value)
+            expense.save()
+            messages.success(request, 'Expense updated.')
         return redirect('expense_list', org_slug=self.org.slug)
 
 
-class ExpenseDeleteView(OrgAdminMixin, View):
+class ExpenseDeleteView(ExpenseAdminMixin, View):
     def post(self, request, org_slug, pk):
         expense = get_object_or_404(Expense, pk=pk, organisation=self.org)
-        desc = expense.description
+        description = expense.description
         expense.delete()
-        messages.success(request, f'Expense "{desc}" deleted.')
+        messages.success(request, f'Expense "{description}" deleted.')
         return redirect('expense_list', org_slug=self.org.slug)

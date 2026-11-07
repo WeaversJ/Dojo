@@ -1,13 +1,64 @@
 import json
+from decimal import Decimal
 
 from django.conf import settings
 from django.contrib import messages
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views import View
 
 from billing.models import Invoice
+from billing.payments import pay_token, stripe_keys
+from billing.payments import settings_for as payments_settings_for
+from dojo.mixins import require_features
+
 from .models import Member, MemberLeavingRequest
+
+
+def _portal_member(token, *features):
+    """The active member for a portal token, 404 unless the member portal and
+    any other given features are switched on for their organisation."""
+    member = get_object_or_404(Member.objects.select_related('organisation'), token=token, is_active=True)
+    require_features(member.organisation, ('member_portal',) + features)
+    return member
+
+
+def _document_categories():
+    from documents.models import Document
+    return Document.Category.choices
+
+
+def _visible_invoices(member):
+    """The member's invoices, newest first. Invoices an admin hasn't checked and sent yet stay hidden."""
+    return member.invoices.exclude(run__status='awaiting_review').order_by('-created_at')
+
+
+def _with_pay_pages(outstanding):
+    """Each unpaid invoice's button opens its payment page: card, bank transfer and in-person options."""
+    for inv in outstanding:
+        inv.pay_page = reverse('invoice_pay', kwargs={'token': pay_token(inv)})
+    return outstanding
+
+
+def _payment_options(request, member):
+    """Card payments, automatic payments and the member's old-style monthly subscription."""
+    org = member.organisation
+    from billing import autopay
+    stripe_enabled = org.has_feature('billing') and stripe_keys(org) is not None
+    autopay_enabled = autopay.enabled(org)
+    autopay_just_set_up = None
+    if autopay_enabled and request.GET.get('autopay_session'):
+        autopay_just_set_up = autopay.finish_setup(org, request.GET['autopay_session'])
+    payment_settings = payments_settings_for(org)
+    return {
+        'stripe_enabled': stripe_enabled,
+        'subscription_enabled': stripe_enabled and bool(member.monthly_fee),
+        'autopay_enabled': autopay_enabled,
+        'autopay': autopay.active_autopay(member),
+        'autopay_just_set_up': autopay_just_set_up,
+        'autopay_expected': bool(payment_settings and payment_settings.auto_pay == 'encouraged'),
+    }
 
 
 class PortalLoginRequestView(View):
@@ -18,16 +69,19 @@ class PortalLoginRequestView(View):
     link. Always shows the same generic confirmation regardless of whether
     the email matched anything, so this can't be used to probe membership.
     """
-    def get(self, request, org_slug):
+    def _org(self, org_slug):
         from organisations.models import Organisation
         org = get_object_or_404(Organisation, slug=org_slug)
-        return render(request, 'portal/login.html', {'org': org})
+        require_features(org, 'member_portal')
+        return org
+
+    def get(self, request, org_slug):
+        return render(request, 'portal/login.html', {'org': self._org(org_slug)})
 
     def post(self, request, org_slug):
-        from organisations.models import Organisation
         from .emails import send_portal_login_link_email
 
-        org = get_object_or_404(Organisation, slug=org_slug)
+        org = self._org(org_slug)
         email = request.POST.get('email', '').strip()
 
         if email:
@@ -51,13 +105,11 @@ class PortalView(View):
     sections. Detailed content lives on its own page (see PortalClassesView,
     PortalPaymentHistoryView, etc.) rather than all being stacked here."""
     def get(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token)
         org = member.organisation
 
-        has_guardians = member.guardians.exists()
-
-        invoices = member.invoices.order_by('-created_at')
-        outstanding = [inv for inv in invoices if inv.status != 'paid']
+        invoices = _visible_invoices(member)
+        outstanding = _with_pay_pages([inv for inv in invoices if inv.status != 'paid'])
 
         from progression.models import MemberProgression
         current_grade = (
@@ -68,28 +120,21 @@ class PortalView(View):
             .first()
         )
 
-        outstanding_total = sum(inv.amount for inv in outstanding)
-
-        from decimal import Decimal
-        credit_total = sum((inv.available_credit for inv in invoices), Decimal('0'))
-
-        stripe_enabled = bool(settings.STRIPE_PUBLIC_KEY and settings.STRIPE_SECRET_KEY)
-        subscription_enabled = stripe_enabled and bool(member.monthly_fee)
-
         leaving_request = member.leaving_requests.filter(status=MemberLeavingRequest.Status.PENDING).first()
 
         return render(request, 'portal/index.html', {
             'active': 'dashboard',
             'member': member,
             'org': org,
-            'has_guardians': has_guardians,
+            'guardian': member.guardians.filter(email__gt='').first(),
+            'has_guardians': member.guardians.exists(),
             'outstanding': outstanding,
             'current_grade': current_grade,
-            'outstanding_total': outstanding_total,
-            'credit_total': credit_total,
-            'stripe_enabled': stripe_enabled,
-            'subscription_enabled': subscription_enabled,
+            'outstanding_total': sum(inv.amount for inv in outstanding),
+            'credit_total': sum((inv.available_credit for inv in invoices), Decimal('0')),
             'leaving_request': leaving_request,
+            'session_counts': member.session_counts(),
+            **_payment_options(request, member),
         })
 
 
@@ -107,10 +152,9 @@ class PortalMyDetailsView(View):
         ).first()
 
     def get(self, request, token):
-        from documents.models import Document
-
-        member = get_object_or_404(Member, token=token, is_active=True)
-        photo_consent_field = self._photo_consent_field(member.organisation)
+        member = _portal_member(token)
+        org = member.organisation
+        photo_consent_field = self._photo_consent_field(org)
         photo_consent = bool(
             photo_consent_field and member.custom_field_values.get(str(photo_consent_field.pk))
         )
@@ -118,16 +162,16 @@ class PortalMyDetailsView(View):
         return render(request, 'portal/my_details.html', {
             'active': 'details',
             'member': member,
-            'org': member.organisation,
+            'org': org,
             'photo_consent_field': photo_consent_field,
             'photo_consent': photo_consent,
-            'documents': member.documents.order_by('-uploaded_at'),
-            'document_categories': Document.Category.choices,
+            'documents': member.documents.order_by('-uploaded_at') if org.has_feature('documents') else [],
+            'document_categories': _document_categories(),
             'leaving_request': leaving_request,
         })
 
     def post(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token)
 
         member.email = request.POST.get('email', '').strip()
         member.phone = request.POST.get('phone', '').strip()
@@ -155,7 +199,7 @@ class PortalMyDetailsView(View):
 class PortalClassesView(View):
     """Classes the member is enrolled in, plus their recent attendance."""
     def get(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token)
 
         from classes.models import Attendance, ClassMember
         enrolments = (
@@ -175,13 +219,14 @@ class PortalClassesView(View):
             'org': member.organisation,
             'enrolments': enrolments,
             'recent_attendance': recent_attendance,
+            'session_counts': member.session_counts(),
         })
 
 
 class PortalCodeOfConductView(View):
     """Static Code of Conduct page — same content for every member/org, just needs the shared portal chrome."""
     def get(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token)
         return render(request, 'portal/code_of_conduct.html', {
             'active': 'conduct',
             'member': member,
@@ -190,15 +235,13 @@ class PortalCodeOfConductView(View):
 
 
 class PortalPaymentHistoryView(View):
-    """Full invoice history — outstanding (with pay buttons) and paid."""
+    """Full invoice history — outstanding (with pay buttons) and paid — plus automatic payments."""
     def get(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token, 'billing')
 
-        invoices = member.invoices.order_by('-created_at')
-        outstanding = [inv for inv in invoices if inv.status != 'paid']
+        invoices = _visible_invoices(member)
+        outstanding = _with_pay_pages([inv for inv in invoices if inv.status != 'paid'])
         paid = [inv for inv in invoices if inv.status == 'paid']
-        outstanding_total = sum(inv.amount for inv in outstanding)
-        stripe_enabled = bool(settings.STRIPE_PUBLIC_KEY and settings.STRIPE_SECRET_KEY)
 
         return render(request, 'portal/payments.html', {
             'active': 'payments',
@@ -206,8 +249,8 @@ class PortalPaymentHistoryView(View):
             'org': member.organisation,
             'outstanding': outstanding,
             'paid': paid,
-            'outstanding_total': outstanding_total,
-            'stripe_enabled': stripe_enabled,
+            'outstanding_total': sum(inv.amount for inv in outstanding),
+            **_payment_options(request, member),
         })
 
 
@@ -218,7 +261,7 @@ class RequestStopTrainingView(View):
     staff side (see MemberDetailView / member_list "Leaving" filter).
     """
     def post(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token)
         already_pending = MemberLeavingRequest.objects.filter(
             member=member, status=MemberLeavingRequest.Status.PENDING,
         ).exists()
@@ -237,8 +280,8 @@ class RequestStopTrainingView(View):
 class PortalSyllabusView(View):
     """Syllabus checklist auto-filtered to the member's current stage in each progression system they're in. Read-only — only staff can tick items."""
     def get(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
-        from progression.models import MemberProgression, MemberSyllabusProgress
+        member = _portal_member(token, 'grades')
+        from progression.models import MemberProgression, MemberSyllabusProgress, split_syllabus_columns
 
         progressions = (
             MemberProgression.objects.filter(member=member)
@@ -266,6 +309,7 @@ class PortalSyllabusView(View):
                 'stage': p.stage,
                 'section': section,
                 'groups': groups,
+                'columns': split_syllabus_columns(groups),
             })
 
         return render(request, 'portal/syllabus.html', {
@@ -277,42 +321,63 @@ class PortalSyllabusView(View):
         })
 
 
+# Members' own uploads: a portal link is the only key, so keep them small and sensible.
+PORTAL_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+PORTAL_UPLOAD_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.heic', '.doc', '.docx'}
+PORTAL_UPLOAD_LIMIT = 20
+
+
 class PortalDocumentUploadView(View):
-    """Member uploads a file to their own profile — visible to staff same as anything staff upload."""
+    """A member adds a document (e.g. a medical letter) to their own record. Staff see it marked "From member"."""
+
     def post(self, request, token):
+        import os
+        import secrets
+
         from documents.models import Document
 
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token, 'documents')
         f = request.FILES.get('file')
+        # The upload form is on the member's My details page.
+        back = redirect(reverse('portal_my_details', kwargs={'token': token}) + '#documents')
         if not f:
-            messages.error(request, 'No file selected.')
-            return redirect('portal_my_details', token=token)
-
-        name = request.POST.get('name', '').strip() or f.name
+            messages.error(request, 'Choose a file to upload.')
+            return back
+        ext = os.path.splitext(f.name)[1].lower()
+        if ext not in PORTAL_UPLOAD_EXTENSIONS:
+            messages.error(request, 'Upload a PDF, photo (JPG, PNG or HEIC) or Word document.')
+            return back
+        if f.size > PORTAL_UPLOAD_MAX_BYTES:
+            messages.error(request, 'That file is too big. The limit is 10 MB.')
+            return back
+        if member.documents.filter(uploaded_by_member=True).count() >= PORTAL_UPLOAD_LIMIT:
+            messages.error(request, f'You can upload up to {PORTAL_UPLOAD_LIMIT} documents. Contact the club to add more.')
+            return back
         category = request.POST.get('category', Document.Category.OTHER)
-        valid_categories = {c for c, _ in Document.Category.choices}
-        if category not in valid_categories:
+        if category not in Document.Category.values:
             category = Document.Category.OTHER
-
-        Document.objects.create(
-            member=member, name=name, category=category,
-            file=f, uploaded_by_member=True,
-        )
-        messages.success(request, f'"{name}" uploaded.')
-        return redirect('portal_my_details', token=token)
+        name = (request.POST.get('name', '').strip() or f.name)[:255]
+        # Stored under a random name: the member's own file name (often theirs or
+        # their child's) stays only in the document's name, never in a path.
+        f.name = f'{secrets.token_urlsafe(16)}{ext}'
+        Document.objects.create(member=member, name=name, category=category, file=f, uploaded_by_member=True)
+        messages.success(request, f'"{name}" uploaded. The club can see it now.')
+        return back
 
 
 class PortalDocumentDownloadView(View):
+    """A member downloads one of the documents on their own record."""
+
     def get(self, request, token, pk):
         from django.http import FileResponse, Http404
         from documents.models import Document
 
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token, 'documents')
         doc = get_object_or_404(Document, pk=pk, member=member)
         try:
-            return FileResponse(doc.file.open('rb'), as_attachment=True, filename=doc.name)
+            return FileResponse(doc.file.open('rb'), as_attachment=True, filename=doc.download_name)
         except FileNotFoundError:
-            raise Http404
+            raise Http404 from None
 
 
 class PortalDataSummaryView(View):
@@ -325,7 +390,7 @@ class PortalDataSummaryView(View):
     specifically wants a machine-readable copy (Art. 20 portability).
     """
     def get(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token)
 
         from classes.models import Attendance
         from documents.models import Document, SignedWaiver
@@ -364,7 +429,7 @@ class DownloadDataView(View):
     Most members are better served by PortalDataSummaryView; this is for anyone who specifically wants
     a machine-readable copy."""
     def get(self, request, token):
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token)
 
         from classes.models import Attendance
         from documents.models import Document, SignedWaiver
@@ -438,19 +503,18 @@ class CreateCheckoutView(View):
     def post(self, request, token, invoice_pk):
         import stripe
 
-        member = get_object_or_404(Member, token=token, is_active=True)
+        member = _portal_member(token, 'billing')
         invoice = get_object_or_404(Invoice, pk=invoice_pk, member=member, status='unpaid')
 
-        if not (settings.STRIPE_PUBLIC_KEY and settings.STRIPE_SECRET_KEY):
+        keys = stripe_keys(member.organisation)
+        if keys is None:
             return redirect('member_portal', token=token)
-
-        stripe.api_key = settings.STRIPE_SECRET_KEY
 
         site_url = settings.SITE_URL.rstrip('/')
         portal_url = f"{site_url}/p/{token}/"
 
         session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
+            api_key=keys.secret,
             line_items=[{
                 'price_data': {
                     'currency': 'gbp',
@@ -476,18 +540,19 @@ class CreateCheckoutView(View):
         return redirect(session.url)
 
 
+# Monthly Stripe subscriptions, started from the portal. DojoUK replaced these
+# with automatic payments (below) and removed them; this fork keeps both.
+# They use the same Stripe keys as card payments (Settings → Payments, or the
+# STRIPE_* environment variables for a club that hasn't set any there).
+
 class CreateSubscriptionView(View):
     def post(self, request, token):
         import stripe
 
-        member = get_object_or_404(Member, token=token, is_active=True)
-
-        if not (settings.STRIPE_PUBLIC_KEY and settings.STRIPE_SECRET_KEY):
+        member = _portal_member(token, 'billing')
+        keys = stripe_keys(member.organisation)
+        if keys is None or not member.monthly_fee:
             return redirect('member_portal', token=token)
-        if not member.monthly_fee:
-            return redirect('member_portal', token=token)
-
-        stripe.api_key = settings.STRIPE_SECRET_KEY
 
         site_url = settings.SITE_URL.rstrip('/')
         portal_url = f"{site_url}/p/{token}/"
@@ -502,6 +567,7 @@ class CreateSubscriptionView(View):
                 else member.email or None
             )
             customer = stripe.Customer.create(
+                api_key=keys.secret,
                 email=customer_email,
                 name=member.name,
                 metadata={'member_pk': str(member.pk)},
@@ -511,6 +577,7 @@ class CreateSubscriptionView(View):
             customer_id = customer.id
 
         session = stripe.checkout.Session.create(
+            api_key=keys.secret,
             customer=customer_id,
             payment_method_types=['card'],
             line_items=[{
@@ -538,17 +605,16 @@ class BillingPortalView(View):
     def post(self, request, token):
         import stripe
 
-        member = get_object_or_404(Member, token=token, is_active=True)
-
-        if not member.stripe_customer_id or not settings.STRIPE_SECRET_KEY:
+        member = _portal_member(token, 'billing')
+        keys = stripe_keys(member.organisation)
+        if not member.stripe_customer_id or keys is None:
             return redirect('member_portal', token=token)
-
-        stripe.api_key = settings.STRIPE_SECRET_KEY
 
         site_url = settings.SITE_URL.rstrip('/')
         portal_url = f"{site_url}/p/{token}/"
 
         session = stripe.billing_portal.Session.create(
+            api_key=keys.secret,
             customer=member.stripe_customer_id,
             return_url=portal_url,
         )
@@ -560,17 +626,41 @@ class CancelSubscriptionView(View):
     def post(self, request, token):
         import stripe
 
-        member = get_object_or_404(Member, token=token, is_active=True)
-
-        if not member.stripe_subscription_id:
+        member = _portal_member(token, 'billing')
+        keys = stripe_keys(member.organisation)
+        if not member.stripe_subscription_id or keys is None:
             return redirect('member_portal', token=token)
 
-        stripe.api_key = settings.STRIPE_SECRET_KEY
         stripe.Subscription.modify(
             member.stripe_subscription_id,
+            api_key=keys.secret,
             cancel_at_period_end=True,
         )
         member.subscription_status = 'cancelling'
         member.save(update_fields=['subscription_status'])
 
         return redirect('member_portal', token=token)
+
+
+class AutoPaySetupView(View):
+    """Sends the member to Stripe to save a card or set up a Direct Debit for automatic payments."""
+
+    def post(self, request, token):
+        from billing import autopay
+        member = _portal_member(token, 'billing')
+        portal_url = request.build_absolute_uri(reverse('member_portal', kwargs={'token': token}))
+        if not autopay.enabled(member.organisation):
+            return redirect('member_portal', token=token)
+        import stripe
+        try:
+            return redirect(autopay.start_setup(member, portal_url))
+        except stripe.error.StripeError:
+            return redirect(reverse('member_portal', kwargs={'token': token}) + '?payment_error=1')
+
+
+class AutoPayOffView(View):
+    def post(self, request, token):
+        from billing import autopay
+        member = _portal_member(token, 'billing')
+        autopay.turn_off(member)
+        return redirect(reverse('member_portal', kwargs={'token': token}) + '?autopay_off=1')

@@ -6,13 +6,18 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 from django.views.generic import DetailView, ListView
 
-from dojo.mixins import ClassCoachMixin, OrgAdminMixin, OrgMixin
+from dojo.mixins import ClassCapabilityMixin, ClassCoachMixin, OrgAdminMixin, OrgMixin
 from members.models import Member
 
 from .models import (
     Attendance, Class, ClassCoach, ClassHelper, ClassMember, Session, SessionCoach, SessionHelper,
     WaitingList,
 )
+from .register import (
+    attach_member_contacts, attach_register_flags, attach_staff_contacts, with_former_members,
+)
+from mailer import blocks as email_blocks
+from mailer import compose
 
 
 DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -48,81 +53,35 @@ def _coaches_and_holiday_split(assigned_class, on_date):
     return available, excluded
 
 
-def _attach_photo_consent(org, enrolled):
-    """
-    Sets `.member.photo_consent` on each ClassMember in `enrolled` (a list
-    or queryset with `.member` selected) from the org's "Photo consent"
-    boolean custom field, if one exists. Used so registers can show a
-    camera emoji next to consenting members — visible to coaches too, not
-    just admins, since it's the coach taking photos at the session.
-    """
+def _photo_consent_field(org):
+    """The club's "Photo consent" yes/no custom field, if it has one."""
     from members.models import CustomField
-
-    enrolled = list(enrolled)
-    photo_consent_field = CustomField.objects.filter(
+    return CustomField.objects.filter(
         organisation=org, field_type=CustomField.FieldType.BOOLEAN, name__iexact='Photo consent',
     ).first()
-    for cm in enrolled:
-        cm.member.photo_consent = bool(
-            photo_consent_field and cm.member.custom_field_values.get(str(photo_consent_field.pk))
-        )
-    return enrolled
 
 
-def _add_former_members_with_attendance(assigned_class, session, enrolled):
+def _attach_member_photo_consent(org, members):
     """
-    Extends `enrolled` (currently-enrolled ClassMembers for this class) with anyone
-    who has an Attendance row for this specific session but has since been removed
-    from the class — so past registers keep showing who was actually marked present
-    or absent, even after they leave. Attendance is keyed directly to Member, not
-    ClassMember, so this history already survives unenrolment in the database; it
-    was just being filtered out of the register view. Only sessions that already
-    have recorded attendance pull in former members, so upcoming/untaken registers
-    are unaffected.
+    Sets `.photo_consent` on each member from the club's "Photo consent"
+    yes/no field, so registers and class pages can show a camera next to
+    members who've given it. Visible to coaches too, since it's the coach
+    taking photos at the session. If the club has put that field on
+    registers (DojoUK's register badges), the badge shows instead. Returns the members.
     """
+    field = _photo_consent_field(org)
+    if field and field.show_on_registers:
+        field = None  # already shown as a register badge (Settings → Custom fields), so no camera too
+    for member in members:
+        member.photo_consent = bool(field and (member.custom_field_values or {}).get(str(field.pk)))
+    return members
+
+
+def _attach_photo_consent(org, enrolled):
+    """`_attach_member_photo_consent` for a list of ClassMember rows. Returns them as a list."""
     enrolled = list(enrolled)
-    for cm in enrolled:
-        cm.is_former_member = False
-
-    current_member_ids = {cm.member_id for cm in enrolled}
-    former_member_ids = list(
-        Attendance.objects.filter(session=session)
-        .exclude(member_id__in=current_member_ids)
-        .values_list('member_id', flat=True)
-    )
-    if former_member_ids:
-        for member in Member.objects.filter(pk__in=former_member_ids):
-            ghost = ClassMember(assigned_class=assigned_class, member=member)
-            ghost.is_former_member = True
-            enrolled.append(ghost)
-        enrolled.sort(key=lambda cm: (cm.member.name or '').lower())
+    _attach_member_photo_consent(org, [cm.member for cm in enrolled])
     return enrolled
-
-
-def _attach_coach_emergency_contacts(org, coaches):
-    """
-    Sets `.emergency_contact_name` / `.emergency_contact_phone` /
-    `.emergency_contact_2_name` / `.emergency_contact_2_phone` on each
-    ClassCoach in `coaches` (a list or queryset with `.user` selected), pulled
-    from the matching OrganisationMember. Mirrors how member emergency
-    contacts already flow straight into the register from the Member model,
-    so coaches get the same treatment there.
-    """
-    from organisations.models import OrganisationMember
-
-    coaches = list(coaches)
-    user_ids = [cc.user_id for cc in coaches]
-    om_by_user_id = {
-        om.user_id: om
-        for om in OrganisationMember.objects.filter(organisation=org, user_id__in=user_ids)
-    }
-    for cc in coaches:
-        om = om_by_user_id.get(cc.user_id)
-        cc.emergency_contact_name = om.emergency_contact_name if om else ''
-        cc.emergency_contact_phone = om.emergency_contact_phone if om else ''
-        cc.emergency_contact_2_name = om.emergency_contact_2_name if om else ''
-        cc.emergency_contact_2_phone = om.emergency_contact_2_phone if om else ''
-    return coaches
 
 
 def _class_form_class(org=None):
@@ -139,12 +98,17 @@ def _class_form_class(org=None):
             super().__init__(*args, **kwargs)
             for field in self.fields.values():
                 field.widget.attrs['class'] = 'form-control'
-            if org:
-                self.fields['billing_policy'].queryset = BillingPolicy.objects.filter(
-                    organisation=org, is_active=True
-                )
-            self.fields['billing_policy'].required = False
-            self.fields['billing_policy'].empty_label = '— No policy —'
+            if org and not org.has_feature('waiting_lists'):
+                del self.fields['max_capacity']
+            if org and not org.has_feature('billing'):
+                del self.fields['billing_policy']
+            if 'billing_policy' in self.fields:
+                if org:
+                    self.fields['billing_policy'].queryset = BillingPolicy.objects.filter(
+                        organisation=org, is_active=True
+                    )
+                self.fields['billing_policy'].required = False
+                self.fields['billing_policy'].empty_label = '— No policy —'
 
     return ClassForm
 
@@ -245,32 +209,11 @@ class ClassDetailView(OrgAdminMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         enrolled_ids = list(self.object.enrolments.values_list('member_id', flat=True))
-        enrolled = list(
-            Member.objects.filter(pk__in=enrolled_ids)
-            .order_by('name')
-        )
-        from members.models import CustomField
-        photo_consent_field = CustomField.objects.filter(
-            organisation=self.org, field_type=CustomField.FieldType.BOOLEAN, name__iexact='Photo consent',
-        ).first()
-        for m in enrolled:
-            m.photo_consent = bool(
-                photo_consent_field and m.custom_field_values.get(str(photo_consent_field.pk))
-            )
-        from progression.models import MemberProgression, ProgressionSystem
-        backwell_system = ProgressionSystem.objects.filter(
-            organisation=self.org, name__iexact='Backwell Grading',
-        ).first()
-        latest_progression_by_member = {}
-        if backwell_system:
-            for mp in (
-                MemberProgression.objects.filter(member_id__in=enrolled_ids, stage__system=backwell_system)
-                .select_related('stage')
-                .order_by('member_id', '-achieved_date')
-            ):
-                latest_progression_by_member.setdefault(mp.member_id, mp)
-        for m in enrolled:
-            m.latest_progression = latest_progression_by_member.get(m.pk)
+        enrolled = attach_register_flags(self.org, list(Member.objects.filter(pk__in=enrolled_ids).order_by('name')))
+        _attach_member_photo_consent(self.org, enrolled)
+        if self.org.has_feature('grades'):
+            from progression.gradings import attach_current_grades
+            attach_current_grades(enrolled)
         context['enrolled'] = enrolled
         context['available'] = (
             Member.objects.filter(organisation=self.org, is_active=True)
@@ -311,26 +254,61 @@ class ClassDetailView(OrgAdminMixin, DetailView):
             present_count=Count('attendance', filter=Q(attendance__present=True))
         ).order_by('-date')[:10]
         context['days'] = DAYS
-        context['waiting_list'] = self.object.waiting_list.select_related('member')
+        context['waiting_list'] = (
+            self.object.waiting_list.select_related('member')
+            if self.org.has_feature('waiting_lists') else []
+        )
         return context
 
 
-def _redirect_after_class_action(request, org, cls):
+def _roster_choices(view, cls):
     """
-    Where to send the browser after enrolling a member / adding a coach or
-    helper. The quick-add controls on the register page post next=register
-    plus the session_pk they were opened from, so the coach taking that
-    register lands back where they were instead of the org-admin-only class
-    page they may not even have access to. Falls back to the admin class
-    page, which is what the original add forms there still rely on.
+    Who can be added to a class from the coach's class page and the
+    register: {'available_members', 'available_coaches'}, both empty unless
+    this person may enrol members.
     """
-    session_pk = request.POST.get('session_pk')
-    if request.POST.get('next') == 'register' and session_pk:
-        return redirect('session_register', org_slug=org.slug, pk=cls.pk, session_pk=session_pk)
-    return redirect('class_detail', org_slug=org.slug, pk=cls.pk)
+    if not view.can('manage_class_members'):
+        return {'available_members': [], 'available_coaches': [], 'available_helpers': []}
+    from organisations.models import OrganisationMember
+    return {
+        # Class helpers (members who help run the class), from this fork.
+        'available_helpers': (
+            Member.objects.filter(organisation=view.org, is_active=True)
+            .exclude(helping_classes__assigned_class=cls)
+            .order_by('name')
+        ),
+        'available_members': (
+            Member.objects.filter(organisation=view.org, is_active=True)
+            .exclude(enrolments__assigned_class=cls)
+            .order_by('name')
+        ),
+        'available_coaches': (
+            OrganisationMember.objects.filter(organisation=view.org)
+            .exclude(user__coached_classes__assigned_class=cls)
+            .select_related('user')
+            .order_by('user__first_name', 'user__last_name', 'user__username')
+        ),
+    }
 
 
-class EnrolMemberView(ClassCoachMixin, View):
+def _back_to_class(view, request, cls):
+    """
+    Where a class action returns to: the register it was taken from (the
+    quick-add controls post next=register and the session), otherwise the
+    class page this person can see.
+    """
+    session_pk = request.POST.get('session_pk', '')
+    if request.POST.get('next') == 'register' and session_pk.isdigit():
+        if Session.objects.filter(pk=session_pk, assigned_class=cls).exists():
+            return redirect('session_register', org_slug=view.org.slug, pk=cls.pk, session_pk=session_pk)
+    if view.is_org_admin:
+        return redirect('class_detail', org_slug=view.org.slug, pk=cls.pk)
+    return redirect('coach_class_detail', org_slug=view.org.slug, pk=cls.pk)
+
+
+class EnrolMemberView(ClassCapabilityMixin, View):
+    required_capabilities = ('manage_class_members',)
+
     def post(self, request, org_slug, pk):
         cls = self.assigned_class
         member = get_object_or_404(Member, pk=request.POST.get('member_id'), organisation=self.org)
@@ -344,7 +322,7 @@ class EnrolMemberView(ClassCoachMixin, View):
             WaitingList.objects.filter(assigned_class=cls, member=member).delete()
             ClassMember.objects.create(assigned_class=cls, member=member)
             messages.success(request, f'{member.name} enrolled.')
-        return _redirect_after_class_action(request, self.org, cls)
+        return _back_to_class(self, request, cls)
 
 
 class UnenrolMemberView(OrgAdminMixin, View):
@@ -364,8 +342,6 @@ class UnenrolMemberView(OrgAdminMixin, View):
 
 
     def _notify_waitlist_promoted(self, request, member, cls):
-        from django.conf import settings
-        from django.core.mail import EmailMultiAlternatives
         has_guardians = member.guardians.exists()
         if has_guardians:
             guardian = member.guardians.filter(email__gt='').first()
@@ -374,32 +350,16 @@ class UnenrolMemberView(OrgAdminMixin, View):
             recipient = member.email or None
         if not recipient:
             return
-        org_name = self.org.name
-        subject = f"A spot has opened up — {cls.name} ({org_name})"
-        greeting = f"Dear guardian of {member.name}" if has_guardians else f"Hi {member.name}"
-        contact_line = (
-            f"To stop receiving non-essential emails like this, contact {self.org.email}."
-            if self.org.email else
-            f"To stop receiving non-essential emails like this, contact {org_name} directly."
-        )
-        body = (
-            f"{greeting},\n\n"
-            f"Great news! A spot has opened up in {cls.name} at {org_name} "
-            f"and {member.name} has been moved off the waiting list and into the class.\n\n"
-            f"No action is needed — you're all set.\n\n"
-            f"Thanks,\n{org_name}\n\n"
-            f"{contact_line}"
-        )
         try:
-            EmailMultiAlternatives(
-                subject=subject, body=body,
-                from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient],
-            ).send()
-        except Exception:
+            compose.send(self.org, 'waiting_list_place', [recipient],
+                         {**compose.member_values(member, to_guardian=has_guardians), 'class_name': cls.name})
+        except Exception:  # the move itself has happened; a failed email mustn't undo it
             pass
 
 
 class RemoveFromWaitingListView(OrgAdminMixin, View):
+    required_feature = 'waiting_lists'
+
     def post(self, request, org_slug, pk, member_pk):
         cls = get_object_or_404(Class, pk=pk, organisation=self.org)
         WaitingList.objects.filter(assigned_class=cls, member_id=member_pk).delete()
@@ -407,16 +367,14 @@ class RemoveFromWaitingListView(OrgAdminMixin, View):
         return redirect('class_detail', org_slug=self.org.slug, pk=cls.pk)
 
 
-class GenerateSessionsView(ClassCoachMixin, View):
+class GenerateSessionsView(ClassCapabilityMixin, View):
+    required_capabilities = ('generate_sessions',)
+
     def post(self, request, org_slug, pk):
         cls = self.assigned_class
-
-        # Whitelisted, not passed straight through — POST data shouldn't pick arbitrary URL names.
-        redirect_to = 'class_detail' if request.POST.get('next') == 'class_detail' else 'coach_class_detail'
-
         if not cls.schedule:
             messages.warning(request, 'This class has no schedule set.')
-            return redirect(redirect_to, org_slug=self.org.slug, pk=cls.pk)
+            return _back_to_class(self, request, cls)
 
         try:
             weeks = max(1, min(int(request.POST.get('weeks', 8)), 52))
@@ -431,15 +389,14 @@ class GenerateSessionsView(ClassCoachMixin, View):
             for entry in cls.schedule:
                 if current.weekday() == entry['day']:
                     _, was_new = Session.objects.get_or_create(
-                        assigned_class=cls, date=current,
-                        defaults={'leader': cls.default_leader},
+                        assigned_class=cls, date=current, defaults={'leader': cls.default_leader},
                     )
                     if was_new:
                         created += 1
             current += timedelta(days=1)
 
         messages.success(request, f'{created} session{"s" if created != 1 else ""} generated.')
-        return redirect(redirect_to, org_slug=self.org.slug, pk=cls.pk)
+        return _back_to_class(self, request, cls)
 
 
 class AttendanceRegisterView(ClassCoachMixin, View):
@@ -450,6 +407,8 @@ class AttendanceRegisterView(ClassCoachMixin, View):
 
     def _unsigned_waiver_ids(self, enrolled):
         from documents.models import SignedWaiver, WaiverTemplate
+        if not self.org.has_feature('documents'):
+            return set()
         has_required_waivers = WaiverTemplate.objects.filter(
             organisation=self.org, is_active=True, is_required=True
         ).exists()
@@ -465,22 +424,44 @@ class AttendanceRegisterView(ClassCoachMixin, View):
         )
         return set(member_ids) - signed_ids
 
-    def _render(self, request, session, enrolled, present_ids, coaches, present_coach_ids, notes, coaches_on_holiday=None, leader_id=..., helpers=None, present_helper_ids=None):
-        coaches = _attach_coach_emergency_contacts(self.org, coaches)
-        # Pre-select the class's usual leader when this session doesn't have one of
-        # its own yet — still just a suggestion, since saving still requires them to
-        # be marked present. Callers re-rendering after a failed submission pass the
-        # leader the user actually picked instead, so it isn't lost from the form.
-        if leader_id is ...:
+    def _enrolled(self, session):
+        """Register rows: the class's members plus anyone marked for this session who has since left."""
+        enrolled = (
+            ClassMember.objects.filter(assigned_class=self.assigned_class)
+            .select_related('member')
+            .order_by('member__name')
+        )
+        enrolled = with_former_members(self.assigned_class, session, enrolled)
+        members = [cm.member for cm in enrolled]
+        attach_register_flags(self.org, members)
+        attach_member_contacts(self.org, members)
+        _attach_member_photo_consent(self.org, members)
+        return enrolled
+
+    def _helpers(self):
+        """The class's helpers: members who help run it, marked on the register like coaches."""
+        helpers = list(
+            ClassHelper.objects.filter(assigned_class=self.assigned_class)
+            .select_related('member')
+            .order_by('member__name')
+        )
+        attach_member_contacts(self.org, [h.member for h in helpers])
+        return helpers
+
+    def _render(self, request, session, enrolled, present_ids, coaches, present_coach_ids, notes,
+                coaches_on_holiday=None, leader_id=None, helpers=None, present_helper_ids=None):
+        coaches = attach_staff_contacts(self.org, coaches)
+        if leader_id is None:
+            # The session's own leader, or the class's usual one as a suggestion.
             leader_id = session.leader_id or self.assigned_class.default_leader_id
-        if helpers is None:
-            helpers = self._get_helpers()
         return render(request, 'classes/register.html', {
+            **_roster_choices(self, self.assigned_class),
             'org': self.org,
             'org_membership': self.org_membership,
             'cls': self.assigned_class,
             'session': session,
             'enrolled': enrolled,
+            'enrolled_count': sum(not cm.is_former_member for cm in enrolled),
             'present_ids': present_ids,
             'coaches': coaches,
             'present_coach_ids': present_coach_ids,
@@ -488,56 +469,13 @@ class AttendanceRegisterView(ClassCoachMixin, View):
             'notes': notes,
             'coaches_on_holiday': coaches_on_holiday or [],
             'leader_id': leader_id,
-            'helpers': helpers,
+            'helpers': self._helpers() if helpers is None else helpers,
             'present_helper_ids': present_helper_ids or set(),
-            'available_members': self._get_available_members(),
-            'available_coaches': self._get_available_coaches(),
-            'available_helpers': self._get_available_helpers(),
         })
-
-    def _get_available_members(self):
-        # Active org members not currently enrolled — offered on the register so
-        # whoever's taking it can enrol someone on the spot, not just admins.
-        return (
-            Member.objects.filter(organisation=self.org, is_active=True)
-            .exclude(enrolments__assigned_class=self.assigned_class)
-            .order_by('name')
-        )
-
-    def _get_available_coaches(self):
-        from organisations.models import OrganisationMember
-        assigned_coach_user_ids = ClassCoach.objects.filter(
-            assigned_class=self.assigned_class
-        ).values_list('user_id', flat=True)
-        return (
-            OrganisationMember.objects.filter(organisation=self.org)
-            .exclude(user_id__in=assigned_coach_user_ids)
-            .select_related('user')
-        )
-
-    def _get_available_helpers(self):
-        return (
-            Member.objects.filter(organisation=self.org, is_active=True)
-            .exclude(helping_classes__assigned_class=self.assigned_class)
-            .order_by('name')
-        )
-
-    def _get_helpers(self):
-        return (
-            ClassHelper.objects.filter(assigned_class=self.assigned_class)
-            .select_related('member')
-            .order_by('member__name')
-        )
 
     def get(self, request, org_slug, pk, session_pk):
         session = self._get_session(session_pk)
-        enrolled = (
-            ClassMember.objects.filter(assigned_class=self.assigned_class)
-            .select_related('member')
-            .order_by('member__name')
-        )
-        enrolled = _attach_photo_consent(self.org, enrolled)
-        enrolled = _add_former_members_with_attendance(self.assigned_class, session, enrolled)
+        enrolled = self._enrolled(session)
         present_ids = set(
             Attendance.objects.filter(session=session, present=True)
             .values_list('member_id', flat=True)
@@ -547,45 +485,40 @@ class AttendanceRegisterView(ClassCoachMixin, View):
             SessionCoach.objects.filter(session=session, present=True)
             .values_list('coach_id', flat=True)
         )
-        helpers = self._get_helpers()
         present_helper_ids = set(
             SessionHelper.objects.filter(session=session, present=True)
             .values_list('helper_id', flat=True)
         )
         return self._render(
             request, session, enrolled, present_ids, coaches, present_coach_ids, session.notes,
-            coaches_on_holiday, helpers=helpers, present_helper_ids=present_helper_ids,
+            coaches_on_holiday, present_helper_ids=present_helper_ids,
         )
 
     def post(self, request, org_slug, pk, session_pk):
         session = self._get_session(session_pk)
-        enrolled = ClassMember.objects.filter(assigned_class=self.assigned_class).select_related('member')
-        enrolled = _attach_photo_consent(self.org, enrolled)
-        enrolled = _add_former_members_with_attendance(self.assigned_class, session, enrolled)
+        enrolled = self._enrolled(session)
         present_ids = {int(x) for x in request.POST.getlist('present')}
         coaches, coaches_on_holiday = _coaches_and_holiday_split(self.assigned_class, session.date)
         coach_present_ids = {int(x) for x in request.POST.getlist('coach_present')}
-        helpers = self._get_helpers()
-        helper_present_ids = {int(x) for x in request.POST.getlist('helper_present')}
+        helpers = self._helpers()
+        helper_present_ids = {int(x) for x in request.POST.getlist('helper_present') if x.isdigit()}
         notes = request.POST.get('notes', session.notes)
-
         leader_raw = request.POST.get('leader', '').strip()
-        submitted_leader_id = None
-        if leader_raw:
-            try:
-                submitted_leader_id = int(leader_raw)
-            except ValueError:
-                submitted_leader_id = None
+        leader_id = int(leader_raw) if leader_raw.isdigit() else None
+        again = {'helpers': helpers, 'present_helper_ids': helper_present_ids}
 
         if coaches.exists() and not coach_present_ids:
             messages.error(request, 'At least one coach must be marked present to save the register.')
-            return self._render(request, session, enrolled, present_ids, coaches, coach_present_ids, notes, coaches_on_holiday, leader_id=submitted_leader_id, helpers=helpers, present_helper_ids=helper_present_ids)
+            return self._render(request, session, enrolled, present_ids, coaches, coach_present_ids, notes,
+                                coaches_on_holiday, leader_id=leader_id or 0, **again)
 
-        if leader_raw and submitted_leader_id not in coach_present_ids:
+        if leader_id is not None and leader_id not in coach_present_ids:
             messages.error(request, 'The session leader must be one of the coaches marked present.')
-            return self._render(request, session, enrolled, present_ids, coaches, coach_present_ids, notes, coaches_on_holiday, leader_id=submitted_leader_id, helpers=helpers, present_helper_ids=helper_present_ids)
-
-        leader_id = submitted_leader_id
+            return self._render(request, session, enrolled, present_ids, coaches, coach_present_ids, notes,
+                                coaches_on_holiday, leader_id=leader_id, **again)
+        # Present coaches come from this class's own coach list.
+        if leader_id is not None and not coaches.filter(user_id=leader_id).exists():
+            leader_id = None
 
         for cm in enrolled:
             Attendance.objects.update_or_create(
@@ -641,72 +574,73 @@ class CoachClassDetailView(ClassCoachMixin, View):
         from datetime import date
         upcoming = cls.sessions.select_related('leader').filter(date__gte=date.today()).order_by('date')[:10]
         recent = cls.sessions.select_related('leader').filter(date__lt=date.today()).order_by('-date')[:5]
-        enrolled = (
+        enrolled = list(
             ClassMember.objects.filter(assigned_class=cls)
             .select_related('member')
             .order_by('member__name')
         )
-        coaches = ClassCoach.objects.filter(assigned_class=cls).select_related('user').order_by(
-            'user__first_name', 'user__last_name', 'user__username'
-        )
+        members = attach_register_flags(self.org, [cm.member for cm in enrolled])
+        if self.org.has_feature('grades'):
+            from progression.gradings import attach_current_grades
+            attach_current_grades(members)
         return render(request, 'classes/coach_detail.html', {
+            **_roster_choices(self, cls),
             'org': self.org,
             'org_membership': self.org_membership,
             'cls': cls,
             'upcoming': upcoming,
             'recent': recent,
             'enrolled': enrolled,
-            'coaches': coaches,
+            'can_generate_sessions': self.can('generate_sessions'),
+            'can_manage_class_members': self.can('manage_class_members'),
+            'class_coaches': cls.coaches.select_related('user').order_by('user__first_name', 'user__last_name'),
         })
 
 
+class AddCoachView(ClassCapabilityMixin, View):
+    required_capabilities = ('manage_class_members',)
+
+    def post(self, request, org_slug, pk):
+        from organisations.models import OrganisationMember
+        cls = self.assigned_class
+        user_pk = request.POST.get('user_id', '')
+        # Only this club's staff can coach its classes.
+        om = get_object_or_404(
+            OrganisationMember.objects.select_related('user'),
+            user_id=user_pk if user_pk.isdigit() else None, organisation=self.org,
+        )
+        ClassCoach.objects.get_or_create(assigned_class=cls, user=om.user)
+        messages.success(request, f'{om.user.get_full_name() or om.user.username} added as coach.')
+        return _back_to_class(self, request, cls)
+
+
 class SetClassLeaderView(ClassCoachMixin, View):
-    """Sets (or clears) Class.default_leader — the coach who normally runs this whole
-    class series. Any coach assigned to the class can set this, not just admins, since
-    it's meant to be a quick self-service "this is my class" designation. Carried onto
-    newly generated sessions and used as the calendar fallback when an individual
-    session has no leader of its own set."""
+    """
+    Sets or clears the class's default leader: the coach who normally runs
+    it. Any coach of the class can set it, as a "this is my class" choice.
+    It's carried onto newly generated sessions and pre-selected on registers.
+    """
 
     def post(self, request, org_slug, pk):
         cls = self.assigned_class
         leader_raw = request.POST.get('default_leader', '').strip()
-
-        # Whitelisted, not passed straight through — POST data shouldn't pick arbitrary URL names.
-        redirect_to = 'class_detail' if request.POST.get('next') == 'class_detail' else 'coach_class_detail'
-
         if not leader_raw:
             cls.default_leader = None
             cls.save(update_fields=['default_leader'])
-            messages.success(request, f'Cleared the default leader for {cls.name}.')
-            return redirect(redirect_to, org_slug=self.org.slug, pk=cls.pk)
-
-        try:
-            leader_id = int(leader_raw)
-        except ValueError:
-            messages.error(request, 'Invalid coach selected.')
-            return redirect(redirect_to, org_slug=self.org.slug, pk=cls.pk)
-
-        coach = ClassCoach.objects.filter(assigned_class=cls, user_id=leader_id).select_related('user').first()
-        if not coach:
-            messages.error(request, 'That coach isn\'t assigned to this class.')
-            return redirect(redirect_to, org_slug=self.org.slug, pk=cls.pk)
-
+            messages.success(request, f'Cleared the usual leader for {cls.name}.')
+            return _back_to_class(self, request, cls)
+        coach = (
+            ClassCoach.objects.filter(assigned_class=cls, user_id=leader_raw if leader_raw.isdigit() else None)
+            .select_related('user').first()
+        )
+        if coach is None:
+            messages.error(request, "That person doesn't coach this class.")
+            return _back_to_class(self, request, cls)
         cls.default_leader = coach.user
         cls.save(update_fields=['default_leader'])
         name = coach.user.get_full_name() or coach.user.username
-        messages.success(request, f'{name} set as the default leader for {cls.name}.')
-        return redirect(redirect_to, org_slug=self.org.slug, pk=cls.pk)
-
-
-class AddCoachView(ClassCoachMixin, View):
-    def post(self, request, org_slug, pk):
-        from django.contrib.auth.models import User
-        cls = self.assigned_class
-        user_pk = request.POST.get('user_id')
-        user = get_object_or_404(User, pk=user_pk)
-        ClassCoach.objects.get_or_create(assigned_class=cls, user=user)
-        messages.success(request, f'{user.get_full_name() or user.username} added as coach.')
-        return _redirect_after_class_action(request, self.org, cls)
+        messages.success(request, f'{name} now leads {cls.name} by default.')
+        return _back_to_class(self, request, cls)
 
 
 class RemoveCoachView(OrgAdminMixin, View):
@@ -715,11 +649,17 @@ class RemoveCoachView(OrgAdminMixin, View):
         coach = get_object_or_404(ClassCoach, pk=coach_pk, assigned_class=cls)
         name = coach.user.get_full_name() or coach.user.username
         coach.delete()
+        if cls.default_leader_id == coach.user_id:
+            cls.default_leader = None
+            cls.save(update_fields=['default_leader'])
         messages.success(request, f'{name} removed as coach.')
         return redirect('class_detail', org_slug=self.org.slug, pk=cls.pk)
 
 
-class AddHelperView(ClassCoachMixin, View):
+class AddHelperView(ClassCapabilityMixin, View):
+    """Adds a class helper. Same permission as enrolling members (Enrol members)."""
+    required_capabilities = ('manage_class_members',)
+
     def post(self, request, org_slug, pk):
         cls = self.assigned_class
         member = get_object_or_404(Member, pk=request.POST.get('member_id'), organisation=self.org)
@@ -728,7 +668,7 @@ class AddHelperView(ClassCoachMixin, View):
             messages.success(request, f'{member.name} added as a helper.')
         else:
             messages.info(request, f'{member.name} is already a helper for this class.')
-        return _redirect_after_class_action(request, self.org, cls)
+        return _back_to_class(self, request, cls)
 
 
 class RemoveHelperView(OrgAdminMixin, View):
@@ -744,15 +684,19 @@ class RemoveHelperView(OrgAdminMixin, View):
 class PrintRegisterView(ClassCoachMixin, View):
     def get(self, request, org_slug, pk, session_pk):
         session = get_object_or_404(Session, pk=session_pk, assigned_class=self.assigned_class)
-        enrolled = ClassMember.objects.filter(
-            assigned_class=self.assigned_class
-        ).select_related('member').order_by('member__name')
-        enrolled = _attach_photo_consent(self.org, enrolled)
-        enrolled = _add_former_members_with_attendance(self.assigned_class, session, enrolled)
+        enrolled = with_former_members(
+            self.assigned_class, session,
+            ClassMember.objects.filter(assigned_class=self.assigned_class).select_related('member').order_by('member__name'),
+        )
+        members = [cm.member for cm in enrolled]
+        attach_register_flags(self.org, members)
+        attach_member_contacts(self.org, members)
+        _attach_member_photo_consent(self.org, members)
         present_ids = set(
             session.attendance.filter(present=True).values_list('member_id', flat=True)
         )
-        coaches, coaches_on_holiday = _coaches_and_holiday_split(self.assigned_class, session.date)
+        coaches, _ = _coaches_and_holiday_split(self.assigned_class, session.date)
+        coaches = attach_staff_contacts(self.org, coaches)
         present_coach_ids = set(
             session.session_coaches.filter(present=True).values_list('coach_id', flat=True)
         )
@@ -768,6 +712,7 @@ class PrintRegisterView(ClassCoachMixin, View):
             'cls': self.assigned_class,
             'session': session,
             'enrolled': enrolled,
+            'enrolled_count': sum(not cm.is_former_member for cm in enrolled),
             'present_ids': present_ids,
             'coaches': coaches,
             'present_coach_ids': present_coach_ids,
@@ -797,9 +742,6 @@ class CancelSessionView(OrgAdminMixin, View):
         return redirect('class_detail', org_slug=self.org.slug, pk=cls.pk)
 
     def _send_cancellation_emails(self, request, cls, session):
-        from django.core.mail import EmailMultiAlternatives
-        from django.template.loader import render_to_string
-
         enrolled = (
             ClassMember.objects.filter(assigned_class=cls)
             .select_related('member')
@@ -818,40 +760,40 @@ class CancelSessionView(OrgAdminMixin, View):
             if not recipient:
                 continue
 
-            org_name = self.org.name
-            subject = f'{org_name} — {cls.name} session cancelled ({session.date.strftime("%d %b %Y")})'
-            context = {
-                'org_name': org_name,
-                'org_email': self.org.email,
-                'class_name': cls.name,
-                'session': session,
-                'member': member,
-                'has_guardians': has_guardians,
-            }
-            html_body = render_to_string('emails/session_cancelled.html', context)
-            text_body = (
-                f"{'Hi' if not has_guardians else 'Dear guardian of'} {member.name},\n\n"
-                f"This is to let you know that the {cls.name} session on "
-                f"{session.date.strftime('%d %b %Y')} has been cancelled.\n\n"
-                f"— {org_name}"
-            )
-            msg = EmailMultiAlternatives(
-                subject=subject, body=text_body,
-                from_email=self.org.email or None,
-                to=[recipient],
-            )
-            msg.attach_alternative(html_body, 'text/html')
+            session_date = session.date.strftime('%A %-d %B %Y')
             try:
-                msg.send()
+                compose.send(self.org, 'session_cancelled', [recipient],
+                             {**compose.member_values(member, to_guardian=has_guardians),
+                              'class_name': cls.name, 'session_date': session_date},
+                             {'session_box': email_blocks.session_box(cls.name, session_date)})
                 sent += 1
-            except Exception:
+            except Exception:  # one bad address mustn't stop the other notices
                 pass
 
         if sent:
             messages.success(request, f'Cancellation notice sent to {sent} member{"s" if sent != 1 else ""}.')
 
 
-class AttendanceAnalyticsView(OrgMixin, View):
+class AttendanceScopeMixin(OrgMixin):
+    """
+    Attendance reporting is open to all staff, but coaches only see the
+    classes they're assigned to unless granted `view_all_attendance`.
+    """
+    def visible_classes(self):
+        classes = Class.objects.filter(organisation=self.org)
+        if not self.can('view_all_attendance'):
+            classes = classes.filter(pk__in=self.coached_class_ids())
+        return classes
+
+    def selected_class_pk(self):
+        """The ?class= filter, ignored unless it's one of the visible classes."""
+        class_pk = self.request.GET.get('class', '')
+        if class_pk.isdigit() and self.visible_classes().filter(pk=class_pk).exists():
+            return class_pk
+        return ''
+
+
+class AttendanceAnalyticsView(AttendanceScopeMixin, View):
     template_name = 'classes/attendance_analytics.html'
 
     def get(self, request, org_slug):
@@ -862,13 +804,18 @@ class AttendanceAnalyticsView(OrgMixin, View):
         eight_weeks_ago = today - timedelta(weeks=8)
         two_weeks_ago = today - timedelta(weeks=2)
 
-        class_pk = request.GET.get('class')
+        class_pk = self.selected_class_pk()
         sort = request.GET.get('sort', 'status')
+        classes = self.visible_classes().order_by('name')
 
+        # Filter by subquery rather than joining enrolments, so a member in
+        # several visible classes isn't counted more than once below.
+        enrolled_ids = ClassMember.objects.filter(
+            assigned_class_id__in=[class_pk] if class_pk else classes.values('pk'),
+        ).values('member_id')
         members = Member.objects.filter(organisation=self.org, is_active=True)
-
-        if class_pk:
-            members = members.filter(enrolments__assigned_class_id=class_pk)
+        if class_pk or not self.can('view_all_attendance'):
+            members = members.filter(pk__in=enrolled_ids)
 
         members = members.annotate(
             last_attended=Max(
@@ -925,49 +872,17 @@ class AttendanceAnalyticsView(OrgMixin, View):
         count_at_risk = sum(1 for m in member_list if m.attendance_status == 'at_risk')
         count_absent = sum(1 for m in member_list if m.attendance_status in ('absent', 'never'))
 
-        # Total sessions run in the last 4 weeks across all org classes
+        # Total sessions run in the last 4 weeks across the visible classes
         total_sessions_4w = Session.objects.filter(
-            assigned_class__organisation=self.org,
+            assigned_class__in=classes,
             date__gte=four_weeks_ago,
             is_cancelled=False,
         ).count()
 
-        classes = Class.objects.filter(organisation=self.org).order_by('name')
-
-        # Attendance trend chart — last N non-cancelled, already-run sessions
-        # of one class, filterable independently of the member-table class
-        # filter above (falls back to it, then to the first class, so
-        # there's something to show on first load).
-        trend_class_pk = request.GET.get('trend_class') or class_pk
-        if not trend_class_pk and classes.exists():
-            trend_class_pk = classes.first().pk
-
-        try:
-            trend_count = int(request.GET.get('trend_count', 10))
-        except (TypeError, ValueError):
-            trend_count = 10
-        if trend_count not in (10, 25, 50):
-            trend_count = 10
-
-        trend_labels, trend_data, trend_average = [], [], None
-        if trend_class_pk:
-            trend_sessions = list(
-                Session.objects.filter(
-                    assigned_class_id=trend_class_pk,
-                    assigned_class__organisation=self.org,
-                    is_cancelled=False,
-                    date__lte=today,
-                )
-                .annotate(present_count=Count('attendance', filter=Q(attendance__present=True)))
-                .order_by('-date')[:trend_count]
-            )
-            trend_sessions.reverse()  # oldest first, so the line reads left-to-right chronologically
-            trend_labels = [s.date.strftime('%d %b') for s in trend_sessions]
-            trend_data = [s.present_count for s in trend_sessions]
-            if trend_data:
-                trend_average = round(sum(trend_data) / len(trend_data), 1)
+        trend = self.trend(request, classes, class_pk, today)
 
         return render(request, self.template_name, {
+            **trend,
             'org': self.org,
             'org_membership': self.org_membership,
             'members': member_list,
@@ -980,16 +895,52 @@ class AttendanceAnalyticsView(OrgMixin, View):
             'sort': sort,
             'today': today,
             'four_weeks_ago': four_weeks_ago,
-            'trend_selected_class': str(trend_class_pk) if trend_class_pk else '',
-            'trend_count': trend_count,
-            'trend_labels': json.dumps(trend_labels),
-            'trend_data': json.dumps(trend_data),
-            'trend_average': trend_average,
-            'trend_has_data': bool(trend_data),
         })
 
+    TREND_COUNTS = (10, 25, 50)
 
-class AttendanceExportView(OrgMixin, View):
+    def trend(self, request, classes, class_pk, today):
+        """
+        Members present at each of a class's last N sessions that have run
+        (not cancelled, register taken), oldest first, and their average. The class can be
+        chosen separately from the table's filter; it defaults to that, then
+        to the first class this person can see.
+        """
+        from django.db.models import Count, Q
+        trend_pk = request.GET.get('trend_class', '')
+        if not (trend_pk.isdigit() and classes.filter(pk=trend_pk).exists()):
+            trend_pk = class_pk or (str(classes.first().pk) if classes.exists() else '')
+        try:
+            count = int(request.GET.get('trend_count', 10))
+        except ValueError:
+            count = 10
+        if count not in self.TREND_COUNTS:
+            count = 10
+        sessions = []
+        if trend_pk:
+            sessions = list(
+                Session.objects.filter(assigned_class_id=trend_pk, is_cancelled=False, date__lte=today)
+                .annotate(
+                    present_count=Count('attendance', filter=Q(attendance__present=True)),
+                    marked_count=Count('attendance'),
+                )
+                .filter(marked_count__gt=0)  # a register nobody has taken yet isn't "nobody came"
+                .order_by('-date')[:count]
+            )
+            sessions.reverse()
+        data = [s.present_count for s in sessions]
+        return {
+            'trend_selected_class': trend_pk,
+            'trend_count': count,
+            'trend_counts': self.TREND_COUNTS,
+            'trend_labels': json.dumps([s.date.strftime('%d %b') for s in sessions]),
+            'trend_data': json.dumps(data),
+            'trend_average': round(sum(data) / len(data), 1) if data else None,
+            'trend_has_data': bool(data),
+        }
+
+
+class AttendanceExportView(AttendanceScopeMixin, View):
     def get(self, request, org_slug):
         import csv
         from django.http import HttpResponse
@@ -997,10 +948,10 @@ class AttendanceExportView(OrgMixin, View):
 
         date_from_raw = request.GET.get('date_from', '')
         date_to_raw = request.GET.get('date_to', '')
-        class_pk = request.GET.get('class', '')
+        class_pk = self.selected_class_pk()
 
         sessions = Session.objects.filter(
-            assigned_class__organisation=self.org,
+            assigned_class__in=self.visible_classes(),
             is_cancelled=False,
         ).select_related('assigned_class').order_by('date')
 
