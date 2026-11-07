@@ -57,7 +57,7 @@ class PortalView(View):
         has_guardians = member.guardians.exists()
 
         invoices = member.invoices.order_by('-created_at')
-        outstanding = [inv for inv in invoices if inv.status != 'paid']
+        outstanding = [inv for inv in invoices if inv.status not in ('paid', 'cancelled')]
 
         from progression.models import MemberProgression
         current_grade = (
@@ -197,7 +197,7 @@ class PortalPaymentHistoryView(View):
         member = get_object_or_404(Member, token=token, is_active=True)
 
         invoices = member.invoices.order_by('-created_at')
-        outstanding = [inv for inv in invoices if inv.status != 'paid']
+        outstanding = [inv for inv in invoices if inv.status not in ('paid', 'cancelled')]
         paid = [inv for inv in invoices if inv.status == 'paid']
         outstanding_total = sum(inv.amount for inv in outstanding)
         stripe_enabled = bool(settings.STRIPE_PUBLIC_KEY and settings.STRIPE_SECRET_KEY)
