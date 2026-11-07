@@ -17,6 +17,8 @@ concurrency:
 
 jobs:
   deploy:
+    # The Dojo website is published from DojoUK/Dojo only, not from forks.
+    if: github.repository == 'DojoUK/Dojo'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
