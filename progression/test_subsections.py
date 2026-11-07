@@ -9,7 +9,7 @@ from progression.models import SyllabusItem, SyllabusSection, SyllabusSubsection
 class SyllabusSubsectionSettingsTests(TestCase):
     def setUp(self):
         user = get_user_model().objects.create_user('admin', password='pw')
-        self.org = Organisation.objects.create(name='Club', slug='club')
+        self.org = Organisation.objects.create(name='Club', slug='club', features={'grades': True})  # belts: an optional feature in DojoUK
         OrganisationMember.objects.create(user=user, organisation=self.org, role=OrganisationMember.Role.ORG_ADMIN)
         self.section = SyllabusSection.objects.create(organisation=self.org, name='Yellow belt')
         self.client.force_login(user)

@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 from django.core.management.utils import get_random_secret_key
 from dotenv import load_dotenv
+from django.contrib.messages import constants as message_constants
 
 load_dotenv()
 
@@ -27,12 +28,6 @@ ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts.split(',') if h.strip()] if _
 
 SITE_URL = os.environ.get('SITE_URL', 'http://localhost:8000')
 
-# Websites allowed to submit applications through the signup API
-# (/api/join/<org>/), comma-separated, e.g. https://www.myclub.co.uk
-SIGNUP_API_ORIGINS = [o.strip().rstrip('/') for o in os.environ.get('SIGNUP_API_ORIGINS', '').split(',') if o.strip()]
-SIGNUP_API_RATE_LIMIT = int(os.environ.get('SIGNUP_API_RATE_LIMIT', '5'))  # per IP per window
-SIGNUP_API_RATE_WINDOW = 60 * 60  # seconds
-
 # Secure-cookie/HTTPS-redirect settings are inferred from SITE_URL's scheme
 # rather than DEBUG. Self-hosted instances are frequently served over plain
 # HTTP (no reverse proxy/TLS termination in front) — forcing HTTPS on them
@@ -46,12 +41,24 @@ if SITE_URL.startswith('https://'):
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
-    # TLS is terminated by the reverse proxy in front of us, so the request
-    # Django sees arrives over plain HTTP. Without trusting the proxy's
-    # forwarded scheme, SECURE_SSL_REDIRECT above sees 'http' and redirects
-    # forever, and CSRF rejects posts whose Origin is the https site.
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     CSRF_TRUSTED_ORIGINS = [SITE_URL.rstrip('/')]
+
+# Behind a reverse proxy that terminates TLS (Caddy, nginx), requests reach
+# Django over plain HTTP, so with an https:// SITE_URL the redirect above
+# loops and form posts fail the CSRF origin check. TRUST_PROXY_HTTPS makes
+# Django believe the proxy's X-Forwarded-Proto header instead. Only switch it
+# on when a proxy that sets (and overwrites) that header is in front:
+# without one, any client could claim to be on HTTPS.
+# The signup API's rate limit also uses it to read the visitor's address from
+# X-Forwarded-For (members.signup.client_ip).
+# This fork has always trusted the proxy whenever SITE_URL is https, so that
+# stays the default when TRUST_PROXY_HTTPS isn't set; set it to false to stop.
+_trust_proxy = os.environ.get('TRUST_PROXY_HTTPS', '').strip().lower()
+TRUST_PROXY_HTTPS = (
+    _trust_proxy in ('1', 'true', 'yes', 'on') if _trust_proxy else SITE_URL.startswith('https://')
+)
+if TRUST_PROXY_HTTPS:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -68,6 +75,9 @@ INSTALLED_APPS = [
     'billing',
     'documents',
     'inventory',
+    'accounts',
+    'mailer',
+    'jobs',
     'django_htmx',
     'auditlog',
 ]
@@ -78,7 +88,9 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'dojo.middleware.OrgSessionTimeoutMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
+    'accounts.middleware.TwoFactorMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'django_htmx.middleware.HtmxMiddleware',
     'auditlog.middleware.AuditlogMiddleware',
@@ -97,6 +109,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
                 'dojo.context_processors.dojo_licence',
+                'dojo.context_processors.dojo_version',
                 'dojo.context_processors.dojo_debug',
             ],
         },
@@ -142,6 +155,9 @@ DOJO_LICENCE_HOLDER = os.environ.get('DOJO_LICENCE_HOLDER', '')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Bootstrap has no .alert-error, so error messages rendered with no colour.
+MESSAGE_TAGS = {message_constants.ERROR: 'danger'}
+
 LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = '/'
 
@@ -151,11 +167,27 @@ LOGIN_REDIRECT_URL = '/'
 SESSION_COOKIE_AGE = 60 * 60 * 2
 SESSION_SAVE_EVERY_REQUEST = True
 
-# Email — defaults to console (prints to docker logs) if SMTP not configured
-EMAIL_BACKEND = os.environ.get(
+# Club websites allowed to send membership applications to the signup API
+# (/api/join/<club>/) from a visitor's browser: comma-separated origins, e.g.
+# https://www.myclub.org.uk. Requests from any other site are refused.
+# Each entry is a website address (any club on this instance) or
+# "<club-slug>=<address>" (only that club); see members.signup.origin_allowed.
+SIGNUP_API_ORIGINS = [o.strip().rstrip('/') for o in os.environ.get('SIGNUP_API_ORIGINS', '').split(',') if o.strip()]
+SIGNUP_API_RATE_LIMIT = int(os.environ.get('SIGNUP_API_RATE_LIMIT', '5'))  # applications per address per hour
+SIGNUP_API_RATE_WINDOW = 60 * 60  # seconds
+
+# Email. Each club chooses how its emails are sent in the setup wizard or
+# Settings → Email (mailer.backends.ClubBackend). The EMAIL_* variables below
+# are the fallback for clubs that haven't chosen; with none set, emails are
+# printed to the docker logs.
+EMAIL_BACKEND = 'mailer.backends.ClubBackend'
+DOJO_FALLBACK_EMAIL_BACKEND = os.environ.get(
     'EMAIL_BACKEND',
     'django.core.mail.backends.console.EmailBackend',
 )
+# "Built-in mail server" email option (the `mail` container in docker-compose.yml).
+DOJO_MAIL_HOST = os.environ.get('DOJO_MAIL_HOST', 'mail')
+DOJO_MAIL_PORT = int(os.environ.get('DOJO_MAIL_PORT', '25'))
 EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')

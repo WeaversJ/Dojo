@@ -17,4 +17,6 @@ urlpatterns = [
     path('cancel-subscription/', portal_views.CancelSubscriptionView.as_view(), name='portal_cancel_subscription'),
     path('stop-training/', portal_views.RequestStopTrainingView.as_view(), name='portal_stop_training'),
     path('billing-portal/', portal_views.BillingPortalView.as_view(), name='portal_billing_portal'),
+    path('automatic-payments/', portal_views.AutoPaySetupView.as_view(), name='portal_autopay_setup'),
+    path('automatic-payments/off/', portal_views.AutoPayOffView.as_view(), name='portal_autopay_off'),
 ]

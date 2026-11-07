@@ -70,15 +70,19 @@
         <a href="{% url 'portal_my_details' token=member.token %}" class="{% if active == 'details' %}active{% endif %}">
             <i class="bi bi-person"></i> My details
         </a>
+        {% if 'grades' in org.enabled_features %}
         <a href="{% url 'portal_syllabus' token=member.token %}" class="{% if active == 'syllabus' %}active{% endif %}">
             <i class="bi bi-award"></i> Syllabus
         </a>
+        {% endif %}
         <a href="{% url 'portal_classes' token=member.token %}" class="{% if active == 'classes' %}active{% endif %}">
             <i class="bi bi-people"></i> Classes
         </a>
+        {% if 'billing' in org.enabled_features %}
         <a href="{% url 'portal_payments' token=member.token %}" class="{% if active == 'payments' %}active{% endif %}">
             <i class="bi bi-receipt"></i> Payments
         </a>
+        {% endif %}
         <a href="{% url 'portal_code_of_conduct' token=member.token %}" class="{% if active == 'conduct' %}active{% endif %}">
             <i class="bi bi-shield-check"></i> Code of Conduct
         </a>
