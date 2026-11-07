@@ -28,7 +28,7 @@
             {% else %}
             <input type="{% if field.setting.kind == 'password' %}password{% elif field.setting.kind == 'number' %}number{% elif field.setting.kind == 'email' %}email{% else %}text{% endif %}"
                    name="{{ field.input_name }}" id="{{ field.input_name }}" value="{{ field.value }}"
-                   class="form-control form-control-sm" autocomplete="off"
+                   class="form-control form-control-sm" autocomplete="{% if field.setting.kind == 'password' %}new-password{% else %}off{% endif %}"
                    {% if field.saved %}placeholder="Saved: leave blank to keep"{% endif %}>
             {% endif %}
             {% if field.setting.help %}<div class="form-text">{{ field.setting.help }}</div>{% endif %}
@@ -58,11 +58,19 @@
 <script>
 (function () {
     const select = document.getElementById('email-provider');
+    // Hidden panels are switched off as well as hidden: a browser won't submit a form while a
+    // field it can't show is invalid (say, a password manager put a login name in another
+    // service's email box), and Save would silently do nothing. Only the chosen service's
+    // fields are read when saving.
+    const show = (el, visible) => {
+        el.classList.toggle('d-none', !visible);
+        el.querySelectorAll('input, select, textarea').forEach(field => { field.disabled = !visible; });
+    };
     const sync = () => {
         document.querySelectorAll('.email-provider-panel').forEach(panel => {
-            panel.classList.toggle('d-none', panel.dataset.provider !== select.value);
+            show(panel, panel.dataset.provider === select.value);
         });
-        document.querySelector('.email-from-fields').classList.toggle('d-none', select.value === 'log');
+        show(document.querySelector('.email-from-fields'), select.value !== 'log');
     };
     select.addEventListener('change', sync);
     sync();

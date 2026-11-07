@@ -151,6 +151,18 @@ class SettingsPageTests(MailerTestCase):
             'dojo._domainkey.testclub.example': True, 'testclub.example': False, '_dmarc.testclub.example': False,
         })
 
+    def test_other_services_fields_cant_block_saving(self):
+        # A browser won't submit while a field it can't show is invalid, e.g. a password manager
+        # putting a login name in a hidden service's email box. Hidden panels are switched off
+        # (disabled) so only the chosen service's fields count, and password managers are told
+        # these are credentials for another service.
+        html = self.client.get(self.url).content.decode()
+        self.assertIn("field.disabled = !visible", html)
+        self.assertIn('name="email_gmail_password"', html)
+        self.assertRegex(html, r'name="email_gmail_password"[^>]*autocomplete="new-password"')
+        self.assertRegex(html, r'name="email_gmail_username"[^>]*autocomplete="off"')
+        self.assertNotRegex(html, r'type="password"\s+name="email_[^"]+"[^>]*autocomplete="off"')
+
     def test_coaches_cannot_change_email_settings(self):
         coach = User.objects.create_user('coach', password='pw')
         OrganisationMember.objects.create(user=coach, organisation=self.org, role='coach')
