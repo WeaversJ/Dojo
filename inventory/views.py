@@ -3,16 +3,15 @@ from django.db.models import ProtectedError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 
-from dojo.mixins import OrgAdminMixin, OrgMixin
+from dojo.mixins import CapabilityMixin, OrgAdminMixin
 
 from .models import Product, ProductVariant, StockMovement
 
 
-class ProductListView(OrgMixin, View):
-    """Viewing the catalogue is open to all org staff (read-only for coaches) —
-    every write action below (create/edit/delete product or variant, stock
-    adjustments) stays OrgAdminMixin so nothing can actually be changed by a
-    non-admin, even if they guess a URL."""
+class ProductListView(CapabilityMixin, View):
+    """The stock list. Admins manage it; staff with View stock see it read-only."""
+    required_feature = 'inventory'
+    required_capabilities = ('view_stock',)
     template_name = 'inventory/list.html'
 
     def get(self, request, org_slug):
@@ -32,10 +31,13 @@ class ProductListView(OrgMixin, View):
             'categories': Product.Category.choices,
             'reasons': StockMovement.Reason.choices,
             'low_stock_variants': low_stock_variants,
+            'can_edit': self.is_org_admin,
         })
 
 
 class ProductCreateView(OrgAdminMixin, View):
+    required_feature = 'inventory'
+
     def post(self, request, org_slug):
         name = request.POST.get('name', '').strip()
         category = request.POST.get('category', Product.Category.OTHER)
@@ -56,6 +58,8 @@ class ProductCreateView(OrgAdminMixin, View):
 
 
 class ProductEditView(OrgAdminMixin, View):
+    required_feature = 'inventory'
+
     def post(self, request, org_slug, pk):
         product = get_object_or_404(Product, pk=pk, organisation=self.org)
         product.name = request.POST.get('name', product.name).strip()
@@ -68,6 +72,8 @@ class ProductEditView(OrgAdminMixin, View):
 
 
 class ProductDeleteView(OrgAdminMixin, View):
+    required_feature = 'inventory'
+
     def post(self, request, org_slug, pk):
         product = get_object_or_404(Product, pk=pk, organisation=self.org)
         name = product.name
@@ -84,6 +90,8 @@ class ProductDeleteView(OrgAdminMixin, View):
 
 
 class VariantCreateView(OrgAdminMixin, View):
+    required_feature = 'inventory'
+
     def post(self, request, org_slug, product_pk):
         product = get_object_or_404(Product, pk=product_pk, organisation=self.org)
         size = request.POST.get('size', '').strip()
@@ -135,6 +143,7 @@ class VariantCreateView(OrgAdminMixin, View):
 class VariantEditView(OrgAdminMixin, View):
     """Edits the catalogue details of a variant. Stock levels are changed only via VariantAdjustStockView
     so every change to quantity_in_stock is logged as a StockMovement."""
+    required_feature = 'inventory'
 
     def post(self, request, org_slug, pk):
         variant = get_object_or_404(ProductVariant, pk=pk, product__organisation=self.org)
@@ -158,6 +167,8 @@ class VariantEditView(OrgAdminMixin, View):
 
 
 class VariantDeleteView(OrgAdminMixin, View):
+    required_feature = 'inventory'
+
     def post(self, request, org_slug, pk):
         variant = get_object_or_404(ProductVariant, pk=pk, product__organisation=self.org)
         label = str(variant)
@@ -176,6 +187,7 @@ class VariantDeleteView(OrgAdminMixin, View):
 class VariantAdjustStockView(OrgAdminMixin, View):
     """Restock, correct, or write off stock for one variant. Always goes through
     ProductVariant.adjust_stock() so the change is locked and logged."""
+    required_feature = 'inventory'
 
     def post(self, request, org_slug, pk):
         variant = get_object_or_404(ProductVariant, pk=pk, product__organisation=self.org)

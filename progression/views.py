@@ -14,6 +14,8 @@ from .models import (
 
 
 class ProgressionSettingsView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def get(self, request, org_slug):
         systems = (
             ProgressionSystem.objects
@@ -30,6 +32,8 @@ class ProgressionSettingsView(OrgAdminMixin, View):
 
 
 class AddSystemView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def post(self, request, org_slug):
         name = request.POST.get('name', '').strip()
         if not name:
@@ -49,6 +53,8 @@ class AddSystemView(OrgAdminMixin, View):
 
 
 class DeleteSystemView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def post(self, request, org_slug, pk):
         system = get_object_or_404(ProgressionSystem, pk=pk, organisation=self.org)
         if MemberProgression.objects.filter(stage__system=system).exists():
@@ -60,6 +66,8 @@ class DeleteSystemView(OrgAdminMixin, View):
 
 
 class ToggleAutoAssignView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def post(self, request, org_slug, pk):
         system = get_object_or_404(ProgressionSystem, pk=pk, organisation=self.org)
         system.assign_to_new_members = not system.assign_to_new_members
@@ -67,7 +75,19 @@ class ToggleAutoAssignView(OrgAdminMixin, View):
         return redirect('progression_settings', org_slug=org_slug)
 
 
+class ToggleUsesGradingsView(OrgAdminMixin, View):
+    required_feature = 'gradings'
+
+    def post(self, request, org_slug, pk):
+        system = get_object_or_404(ProgressionSystem, pk=pk, organisation=self.org)
+        system.uses_gradings = not system.uses_gradings
+        system.save(update_fields=['uses_gradings'])
+        return redirect('progression_settings', org_slug=org_slug)
+
+
 class AddStageView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def post(self, request, org_slug, system_pk):
         system = get_object_or_404(ProgressionSystem, pk=system_pk, organisation=self.org)
         name = request.POST.get('name', '').strip()
@@ -89,6 +109,8 @@ class AddStageView(OrgAdminMixin, View):
 
 
 class DeleteStageView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def post(self, request, org_slug, system_pk, pk):
         system = get_object_or_404(ProgressionSystem, pk=system_pk, organisation=self.org)
         stage = get_object_or_404(ProgressionStage, pk=pk, system=system)
@@ -101,6 +123,8 @@ class DeleteStageView(OrgAdminMixin, View):
 
 
 class MoveStageView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def post(self, request, org_slug, system_pk, pk):
         system = get_object_or_404(ProgressionSystem, pk=system_pk, organisation=self.org)
         stage = get_object_or_404(ProgressionStage, pk=pk, system=system)
@@ -121,6 +145,8 @@ class MoveStageView(OrgAdminMixin, View):
 
 
 class EditStageView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def post(self, request, org_slug, system_pk, pk):
         system = get_object_or_404(ProgressionSystem, pk=system_pk, organisation=self.org)
         stage = get_object_or_404(ProgressionStage, pk=pk, system=system)
@@ -279,6 +305,8 @@ class DeleteSyllabusItemView(OrgAdminMixin, View):
 
 
 class SetDefaultStageView(OrgAdminMixin, View):
+    required_feature = 'grades'
+
     def post(self, request, org_slug, system_pk, pk):
         system = get_object_or_404(ProgressionSystem, pk=system_pk, organisation=self.org)
         stage = get_object_or_404(ProgressionStage, pk=pk, system=system)
@@ -294,6 +322,8 @@ class ApplyDefaultStageView(OrgAdminMixin, View):
     Assigns the system's default stage to every active member who doesn't
     already have any progression record within this system.
     """
+    required_feature = 'grades'
+
     def post(self, request, org_slug, pk):
         from django.utils import timezone
         from members.models import Member
@@ -339,6 +369,7 @@ class ImportProgressionView(OrgAdminMixin, View):
     Required columns: member_name, stage_name, system_name, achieved_date (YYYY-MM-DD)
     Optional column:  notes
     """
+    required_feature = 'grades'
 
     def get(self, request, org_slug):
         systems = ProgressionSystem.objects.filter(organisation=self.org).prefetch_related('stages')

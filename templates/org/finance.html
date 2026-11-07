@@ -1,5 +1,5 @@
 {% extends 'org/base.html' %}
-{% load static %}
+{% load static money %}
 
 {% block title %}Finance{% endblock %}
 {% block page_title %}Financial report{% endblock %}
@@ -20,40 +20,33 @@
 <div class="row g-3 mb-4">
     <div class="col-sm-4">
         <div class="card border-0 shadow-sm text-center py-3">
-            <div class="display-6 fw-bold text-success">£{{ total_revenue_ytd|floatformat:2 }}</div>
+            <div class="display-6 fw-bold text-success">{{ total_revenue_ytd|pounds }}</div>
             <div class="small text-muted mt-1">Revenue {{ today.year }}</div>
         </div>
     </div>
     <div class="col-sm-4">
         <div class="card border-0 shadow-sm text-center py-3">
-            <div class="display-6 fw-bold text-danger">£{{ total_expenses_ytd|floatformat:2 }}</div>
+            <div class="display-6 fw-bold text-danger">{{ total_expenses_ytd|pounds }}</div>
             <div class="small text-muted mt-1">Expenses {{ today.year }}</div>
         </div>
     </div>
     <div class="col-sm-4">
         <div class="card border-0 shadow-sm text-center py-3">
-            <div class="display-6 fw-bold {% if total_profit_ytd >= 0 %}text-success{% else %}text-danger{% endif %}">
-                £{{ total_profit_ytd|floatformat:2 }}
-            </div>
+            <div class="display-6 fw-bold {% if total_profit_ytd >= 0 %}text-success{% else %}text-danger{% endif %}">{{ total_profit_ytd|pounds }}</div>
             <div class="small text-muted mt-1">Profit {{ today.year }}</div>
         </div>
     </div>
-</div>
-
-<div class="row g-3 mb-4">
     <div class="col-sm-6">
         <div class="card border-0 shadow-sm text-center py-3">
             <div class="display-6 fw-bold {% if total_outstanding %}text-warning{% else %}text-success{% endif %}">
-                £{{ total_outstanding|floatformat:2 }}
+                {{ total_outstanding|pounds }}
             </div>
             <div class="small text-muted mt-1">Outstanding</div>
         </div>
     </div>
     <div class="col-sm-6">
         <div class="card border-0 shadow-sm text-center py-3">
-            <div class="display-6 fw-bold {% if profit_this_month >= 0 %}text-success{% else %}text-danger{% endif %}">
-                £{{ profit_this_month|floatformat:2 }}
-            </div>
+            <div class="display-6 fw-bold {% if profit_this_month >= 0 %}text-success{% else %}text-danger{% endif %}">{{ profit_this_month|pounds }}</div>
             <div class="small text-muted mt-1">Profit this month</div>
         </div>
     </div>
@@ -61,15 +54,12 @@
 
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-header bg-white border-bottom py-3">
-        <h6 class="mb-0">
-            Revenue &amp; expenses forecast
-            <span class="text-muted fw-normal small ms-1">last 12 months, projected 6 months ahead</span>
-        </h6>
+        <h6 class="mb-0">Revenue and expenses <span class="text-muted fw-normal small ms-1">last 12 months, with a 6-month projection</span></h6>
     </div>
     <div class="card-body">
         <canvas id="forecastChart" height="80"></canvas>
         <p class="text-muted small mb-0 mt-2">
-            Dashed lines are a straight-line trend projection from revenue received (by payment date) and recorded expenses — not a guarantee, just where the current trend points.
+            Dashed lines carry on the straight-line trend of money received and expenses recorded. It's where the trend points, not a promise.
         </p>
     </div>
 </div>
@@ -101,11 +91,15 @@
                 {% for row in outstanding_members %}
                 <tr>
                     <td class="ps-3 py-2">
+                        {% if request.user.is_superuser or org_membership.is_org_admin %}
                         <a href="{% url 'member_detail' org_slug=org.slug pk=row.member__pk %}" class="text-decoration-none fw-semibold small text-dark">
                             {{ row.member__name }}
                         </a>
+                        {% else %}
+                        <span class="fw-semibold small">{{ row.member__name }}</span>
+                        {% endif %}
                     </td>
-                    <td class="py-2 text-end pe-3 small fw-semibold">£{{ row.total|floatformat:2 }}</td>
+                    <td class="py-2 text-end pe-3 small fw-semibold">{{ row.total|pounds }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -126,101 +120,39 @@
 
 {% block extra_scripts %}
 <script>
-const forecastCtx = document.getElementById('forecastChart');
-new Chart(forecastCtx, {
+// Same format as the cards: £1,250.50 and -£340.00.
+const gbp = new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' });
+const pounds = { callbacks: { label: ctx => ctx.dataset.label + ': ' + gbp.format(ctx.parsed.y) } };
+const poundAxis = { ticks: { callback: val => gbp.format(val).replace(/\.00$/, '') } };
+const dashed = [6, 4];
+new Chart(document.getElementById('forecastChart'), {
     type: 'line',
     data: {
         labels: {{ forecast_chart_labels|safe }},
         datasets: [
-            {
-                label: 'Revenue received (£)',
-                data: {{ revenue_actual_series|safe }},
-                borderColor: '#198754',
-                backgroundColor: '#198754',
-                spanGaps: false,
-                tension: 0.2,
-            },
-            {
-                label: 'Revenue forecast (£)',
-                data: {{ revenue_forecast_series|safe }},
-                borderColor: '#198754',
-                backgroundColor: '#198754',
-                borderDash: [6, 4],
-                spanGaps: true,
-                tension: 0.2,
-            },
-            {
-                label: 'Expenses (£)',
-                data: {{ expense_actual_series|safe }},
-                borderColor: '#dc3545',
-                backgroundColor: '#dc3545',
-                spanGaps: false,
-                tension: 0.2,
-            },
-            {
-                label: 'Expenses forecast (£)',
-                data: {{ expense_forecast_series|safe }},
-                borderColor: '#dc3545',
-                backgroundColor: '#dc3545',
-                borderDash: [6, 4],
-                spanGaps: true,
-                tension: 0.2,
-            },
-        ]
+            { label: 'Revenue', data: {{ revenue_actual_series|safe }}, borderColor: '#198754', backgroundColor: '#198754', tension: 0.2 },
+            { label: 'Revenue trend', data: {{ revenue_forecast_series|safe }}, borderColor: '#198754', backgroundColor: '#198754', borderDash: dashed, spanGaps: true, tension: 0.2 },
+            { label: 'Expenses', data: {{ expense_actual_series|safe }}, borderColor: '#dc3545', backgroundColor: '#dc3545', tension: 0.2 },
+            { label: 'Expenses trend', data: {{ expense_forecast_series|safe }}, borderColor: '#dc3545', backgroundColor: '#dc3545', borderDash: dashed, spanGaps: true, tension: 0.2 },
+        ],
     },
-    options: {
-        responsive: true,
-        plugins: {
-            legend: { display: true },
-            tooltip: {
-                callbacks: {
-                    label: ctx => ctx.dataset.label + ': £' + ctx.parsed.y.toFixed(2)
-                }
-            }
-        },
-        scales: {
-            y: {
-                beginAtZero: true,
-                ticks: {
-                    callback: val => '£' + val
-                }
-            }
-        }
-    }
+    options: { responsive: true, plugins: { legend: { display: true }, tooltip: pounds }, scales: { y: { beginAtZero: true, ...poundAxis } } },
 });
 
-const profitCtx = document.getElementById('profitChart');
 const profitData = {{ profit_chart_data|safe }};
-const isDarkMode = document.documentElement.getAttribute('data-bs-theme') === 'dark';
-new Chart(profitCtx, {
+const barColour = getComputedStyle(document.documentElement).getPropertyValue('--dojo-text').trim() || '#212529';
+new Chart(document.getElementById('profitChart'), {
     type: 'bar',
     data: {
         labels: {{ chart_labels|safe }},
         datasets: [{
-            label: 'Profit (£)',
+            label: 'Profit',
             data: profitData,
-            backgroundColor: profitData.map(v => v >= 0 ? (isDarkMode ? '#e8e8e8' : '#212529') : '#dc3545'),
+            backgroundColor: profitData.map(v => v >= 0 ? barColour : '#dc3545'),
             borderRadius: 4,
-        }]
+        }],
     },
-    options: {
-        responsive: true,
-        plugins: {
-            legend: { display: false },
-            tooltip: {
-                callbacks: {
-                    label: ctx => '£' + ctx.parsed.y.toFixed(2)
-                }
-            }
-        },
-        scales: {
-            y: {
-                ticks: {
-                    callback: val => '£' + val
-                }
-            }
-        }
-    }
+    options: { responsive: true, plugins: { legend: { display: false }, tooltip: pounds }, scales: { y: poundAxis } },
 });
 </script>
 {% endblock %}

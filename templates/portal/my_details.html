@@ -68,7 +68,8 @@
     </div>
 
     <div>
-        <div class="card border-0 shadow-sm mb-4">
+        {% if 'documents' in org.enabled_features %}
+        <div class="card border-0 shadow-sm mb-4" id="documents">
             <div class="card-header bg-white border-bottom py-3">
                 <h6 class="mb-0">Documents</h6>
                 <p class="text-muted small mb-0 mt-1">Files {{ org.name }} has shared with you, and anything you've uploaded — waivers, medical letters, ID, and so on.</p>
@@ -96,7 +97,9 @@
                     {% csrf_token %}
                     <div class="col-sm-5">
                         <label class="form-label small fw-semibold">File</label>
-                        <input type="file" name="file" class="form-control form-control-sm" required>
+                        <input type="file" name="file" class="form-control form-control-sm" required
+                               accept=".pdf,.jpg,.jpeg,.png,.heic,.doc,.docx">
+                        <div class="form-text">PDF, photo or Word document, up to 10 MB.</div>
                     </div>
                     <div class="col-sm-4">
                         <label class="form-label small fw-semibold">Category</label>
@@ -112,6 +115,7 @@
                 </form>
             </div>
         </div>
+        {% endif %}
 
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white border-bottom py-3">

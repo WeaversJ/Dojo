@@ -121,10 +121,25 @@ class Invoice(models.Model):
     reminder_sent_at = models.DateTimeField(null=True, blank=True)
     overpayment_credited = models.DecimalField(
         max_digits=8, decimal_places=2, default=0,
-        help_text="How much of this invoice's overpayment (if any) has already been pulled "
-                   "into a later invoice for the same member as a discount.",
+        help_text="How much of this invoice's overpayment (if any) has already been "
+                  "pulled into a later invoice for the same member as a discount.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class AutoPayStatus(models.TextChoices):
+        NONE = '', 'Not collected automatically'
+        DUE = 'due', 'Waiting to be collected'
+        COLLECTING = 'collecting', 'Being collected'
+        PROCESSING = 'processing', 'Direct Debit in progress'
+        PAID = 'paid', 'Collected'
+        FAILED = 'failed', 'Collection failed'
+
+    # The automatic run that made this invoice, if any (see InvoiceSchedule).
+    run = models.ForeignKey('InvoiceRun', null=True, blank=True, on_delete=models.SET_NULL, related_name='invoices')
+    autopay_status = models.CharField(max_length=12, choices=AutoPayStatus.choices, blank=True, default='')
+    autopay_payment_intent = models.CharField(max_length=255, blank=True)
+    autopay_error = models.CharField(max_length=255, blank=True)
+    autopay_attempts = models.PositiveSmallIntegerField(default=0)
 
     def __str__(self):
         return f"{self.member} — {self.period} — £{self.amount} ({self.get_status_display()})"
@@ -135,35 +150,47 @@ class Invoice(models.Model):
         return self.status == self.Status.UNPAID and self.due_date < date.today()
 
     @property
-    def items_total(self):
-        from decimal import Decimal
-        return sum((item.line_total for item in self.items.all()), Decimal('0'))
-
-    @property
     def amount_paid(self):
         from decimal import Decimal
-        from django.db.models import Sum
-        return self.payments.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+        return sum((payment.amount for payment in self.payments.all()), Decimal('0'))
+
+    @property
+    def balance_due(self):
+        """What's left to pay: the amount less any payments already recorded."""
+        from decimal import Decimal
+        if self.status == self.Status.PAID:
+            return Decimal('0')
+        return max(Decimal(self.amount) - self.amount_paid, Decimal('0'))
 
     @property
     def is_partial(self):
         """Some money has come in, but not enough to cover the invoice yet."""
-        paid = self.amount_paid
-        return 0 < paid < self.amount
+        from decimal import Decimal
+        return self.status != self.Status.PAID and Decimal('0') < self.amount_paid < Decimal(self.amount)
 
     @property
     def overpaid_amount(self):
         """How much more than the invoice total has been paid in, if any."""
         from decimal import Decimal
-        overpaid = self.amount_paid - self.amount
-        return overpaid if overpaid > 0 else Decimal('0')
+        return max(self.amount_paid - Decimal(self.amount), Decimal('0'))
 
     @property
     def available_credit(self):
-        """Overpayment on this invoice that hasn't yet been pulled into a later invoice."""
+        """Overpayment on this invoice not yet taken off a later invoice."""
         from decimal import Decimal
-        remaining = self.overpaid_amount - self.overpayment_credited
-        return remaining if remaining > 0 else Decimal('0')
+        return max(self.overpaid_amount - Decimal(self.overpayment_credited), Decimal('0'))
+
+    @property
+    def payment_reference(self):
+        """The reference members quote on a bank transfer, e.g. INV1234."""
+        settings = getattr(self.organisation, 'payment_settings', None)
+        prefix = settings.reference_prefix if settings else 'INV'
+        return f'{prefix}{self.pk}'
+
+    @property
+    def items_total(self):
+        from decimal import Decimal
+        return sum((item.line_total for item in self.items.all()), Decimal('0'))
 
     class Meta:
         ordering = ['-created_at']
@@ -218,10 +245,131 @@ class Payment(models.Model):
         ordering = ['-paid_at']
 
 
+class PaymentSettings(models.Model):
+    """How members can pay: chosen in the setup wizard, changed in Settings → Payments."""
+    organisation = models.OneToOneField(Organisation, on_delete=models.CASCADE, related_name='payment_settings')
+    accept_bank_transfer = models.BooleanField(default=False)
+    accept_card = models.BooleanField(default=False)
+    accept_cash = models.BooleanField(default=False)
+    bank_account_name = models.CharField(max_length=100, blank=True)
+    bank_sort_code = models.CharField(max_length=8, blank=True)
+    bank_account_number = models.CharField(max_length=8, blank=True)
+    reference_prefix = models.CharField(max_length=10, default='INV',
+                                        help_text='Payment references are this followed by the invoice number.')
+    instructions = models.TextField(blank=True, help_text='Anything else members should know, shown with every invoice.')
+    stripe_publishable_key = models.CharField(max_length=255, blank=True)
+
+    class AutoPayPolicy(models.TextChoices):
+        OFF = 'off', 'Off'
+        OPTIONAL = 'optional', 'Optional: members choose'
+        ENCOURAGED = 'encouraged', 'Expected: members are asked to set it up'
+
+    auto_pay = models.CharField(max_length=12, choices=AutoPayPolicy.choices, default=AutoPayPolicy.OFF)
+    # The Stripe secret key and webhook signing secret, encrypted (see mailer.crypto).
+    secrets = models.TextField(blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = 'payment settings'
+
+    def __str__(self):
+        return f'Payments for {self.organisation}'
+
+    def get_secrets(self):
+        from mailer import crypto
+        return crypto.decrypt_dict(self.secrets)
+
+    def set_secrets(self, values):
+        from mailer import crypto
+        self.secrets = crypto.encrypt_dict({k: v for k, v in values.items() if v})
+
+    @property
+    def stripe_secret_key(self):
+        return self.get_secrets().get('stripe_secret_key', '')
+
+    @property
+    def stripe_webhook_secret(self):
+        return self.get_secrets().get('stripe_webhook_secret', '')
+
+    @property
+    def stripe_webhook_needs_update(self):
+        """True when the webhook was set up before Dojo listened for automatic payment results."""
+        from .stripe_setup import WEBHOOK_EVENTS
+        secrets = self.get_secrets()
+        return bool(secrets.get('stripe_webhook_secret')) and secrets.get('stripe_webhook_events', '').split() != WEBHOOK_EVENTS
+
+    @property
+    def stripe_test_mode(self):
+        return self.stripe_publishable_key.startswith('pk_test_')
+
+
+class AutoPay(models.Model):
+    """A member's saved card or Direct Debit, charged when an invoice is made for them."""
+    member = models.OneToOneField(Member, on_delete=models.CASCADE, related_name='autopay')
+    payment_method_id = models.CharField(max_length=255)
+    mandate_id = models.CharField(max_length=255, blank=True)
+    method_type = models.CharField(max_length=32, help_text='Stripe payment method type, e.g. card or bacs_debit')
+    label = models.CharField(max_length=100, help_text='e.g. Visa ending 4242')
+    active = models.BooleanField(default=True)
+    set_up_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.member}: {self.label}'
+
+
+class InvoiceSchedule(models.Model):
+    """When Dojo makes a plan's invoices by itself. The scheduler container runs it."""
+    class SendMode(models.TextChoices):
+        REVIEW = 'review', 'Let me check them first'
+        SEND = 'send', 'Send them automatically'
+
+    policy = models.OneToOneField(BillingPolicy, on_delete=models.CASCADE, related_name='schedule')
+    enabled = models.BooleanField(default=False)
+    # Monthly plans: the day of the month invoices are made (1-28).
+    day_of_month = models.PositiveSmallIntegerField(default=1)
+    # Termly plans: how many days before each term starts.
+    days_before_term = models.PositiveSmallIntegerField(default=7)
+    # Annual plans: the date each year.
+    annual_month = models.PositiveSmallIntegerField(default=9)
+    annual_day = models.PositiveSmallIntegerField(default=1)
+    due_after_days = models.PositiveSmallIntegerField(default=14)
+    send_mode = models.CharField(max_length=10, choices=SendMode.choices, default=SendMode.REVIEW)
+    # Periods whose invoice date is before this aren't made, so switching on mid-month waits for the next one.
+    starts_from = models.DateField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'Schedule for {self.policy}'
+
+
+class InvoiceRun(models.Model):
+    """One automatic batch of invoices for a plan and period."""
+    class Status(models.TextChoices):
+        AWAITING_REVIEW = 'awaiting_review', 'Waiting for you to check'
+        SENT = 'sent', 'Sent'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    schedule = models.ForeignKey(InvoiceSchedule, on_delete=models.CASCADE, related_name='runs')
+    period = models.CharField(max_length=50)
+    status = models.CharField(max_length=20, choices=Status.choices)
+    invoice_count = models.PositiveIntegerField(default=0)
+    total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [models.UniqueConstraint(fields=['schedule', 'period'], name='one_run_per_plan_and_period')]
+
+    def __str__(self):
+        return f'{self.schedule.policy.name}: {self.period}'
+
+
 class Expense(models.Model):
-    """A club outgoing (rent, equipment, salaries, etc). Tracked separately from
-    billing/invoices so the finance report can show revenue minus expenses = profit,
-    on a monthly basis."""
+    """
+    A club outgoing (rent, equipment, coach pay and so on), so the finance
+    report can show revenue less expenses: profit, month by month.
+    """
 
     class Category(models.TextChoices):
         RENT = 'rent', 'Rent & venue hire'
@@ -250,65 +398,3 @@ class Expense(models.Model):
 
     class Meta:
         ordering = ['-expense_date', '-created_at']
-
-
-def apply_member_credit(invoice):
-    """
-    Pulls any unspent overpayment credit sitting on the member's earlier
-    invoices into this newly-created one, oldest first: reduces the amount
-    owed (recorded as an extra discount) and marks that much of the credit
-    as spent on its source invoice(s) so it isn't offered again later.
-
-    Called right after an invoice is created, from every place that creates
-    one (single/bulk manual invoices, the automated billing run, and the
-    member-list bulk action), so an overpayment always follows the member
-    onto their next bill rather than just sitting unused.
-    """
-    from decimal import Decimal, InvalidOperation
-
-    # `invoice.amount`/`discount_amount` may still be a plain str/float/int here — a
-    # freshly-created instance doesn't get its DecimalFields normalised to Decimal
-    # until it's reloaded from the database, and callers pass amount in as all sorts
-    # of types (Decimal, float, raw form strings). Normalise before doing any math.
-    def _as_decimal(value):
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, TypeError, ValueError):
-            return Decimal('0')
-
-    remaining_needed = _as_decimal(invoice.amount)
-    invoice.amount = remaining_needed
-    if remaining_needed <= 0:
-        return
-
-    credit_sources = (
-        Invoice.objects.filter(member_id=invoice.member_id, organisation_id=invoice.organisation_id)
-        .exclude(pk=invoice.pk)
-        .order_by('due_date', 'created_at')
-    )
-
-    applied_total = Decimal('0')
-    for source in credit_sources:
-        if remaining_needed <= 0:
-            break
-        available = source.available_credit
-        if available <= 0:
-            continue
-        take = min(available, remaining_needed)
-        source.overpayment_credited += take
-        source.save(update_fields=['overpayment_credited'])
-        applied_total += take
-        remaining_needed -= take
-
-    if applied_total <= 0:
-        return
-
-    invoice.discount_amount = _as_decimal(invoice.discount_amount) + applied_total
-    invoice.amount -= applied_total
-    credit_note = f'Includes £{applied_total:.2f} credit applied from a previous overpayment.'
-    invoice.notes = f'{invoice.notes}\n{credit_note}' if invoice.notes else credit_note
-    update_fields = ['discount_amount', 'amount', 'notes']
-    if invoice.amount <= 0:
-        invoice.status = Invoice.Status.PAID
-        update_fields.append('status')
-    invoice.save(update_fields=update_fields)

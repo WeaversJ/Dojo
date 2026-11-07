@@ -1,27 +1,34 @@
-"""JSON signup API for a club's own website.
+"""
+JSON signup API, for a club's own website to take membership applications.
 
-    GET  /api/join/<org>/   club name + active waivers, to build the form
+    GET  /api/join/<org>/   club name, active waivers and collected fields, to build the form
     POST /api/join/<org>/   create a MemberApplication (JSON or form-encoded)
 
-Cross-origin access is limited to SIGNUP_API_ORIGINS. Requests carrying any
-other Origin are refused, so other sites can't post applications from a
-visitor's browser. The endpoint is CSRF-exempt because it uses no cookies or
-session; it can't act as anyone, only do what the public /join/ page does.
+Cross-origin access is limited to SIGNUP_API_ORIGINS (see origin_allowed):
+a request carrying any other Origin is refused, so another site can't post
+applications from a visitor's browser. The endpoint is CSRF-exempt because it uses no cookies
+or session; it can do only what the public /join/ page does. A honeypot
+field and a per-IP rate limit keep bots out.
 """
 import json
 
 from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpResponse, JsonResponse
-from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
-from organisations.models import Organisation
-from .signup import active_waivers, client_ip, create_application
+from .signup import (
+    active_waivers,
+    client_ip,
+    collected_fields,
+    create_application,
+    origin_allowed,
+    signup_org,
+)
 
-# Hidden form field real people never fill in; bots that fill every input do.
+# A hidden form field people never fill in; bots that fill every input do.
 HONEYPOT_FIELD = 'website'
 
 
@@ -35,11 +42,24 @@ def _cors(response, origin):
     return response
 
 
+def _rate_limited(org, request):
+    """Count this attempt; True once the address has used up its window."""
+    key = f'signup-api:{org.pk}:{client_ip(request)}'
+    attempts = cache.get_or_set(key, 0, settings.SIGNUP_API_RATE_WINDOW)
+    if attempts >= settings.SIGNUP_API_RATE_LIMIT:
+        return True
+    try:
+        cache.incr(key)
+    except ValueError:  # the window expired between the read and the increment
+        cache.set(key, 1, settings.SIGNUP_API_RATE_WINDOW)
+    return False
+
+
 @method_decorator(csrf_exempt, name='dispatch')
 class SignupApiView(View):
     def dispatch(self, request, *args, **kwargs):
         origin = request.headers.get('Origin')
-        if origin and origin not in settings.SIGNUP_API_ORIGINS:
+        if origin and not origin_allowed(origin, kwargs.get('org_slug', '')):
             return JsonResponse({'errors': ['Origin not allowed.']}, status=403)
         return _cors(super().dispatch(request, *args, **kwargs), origin)
 
@@ -47,7 +67,7 @@ class SignupApiView(View):
         return HttpResponse(status=204)
 
     def get(self, request, org_slug):
-        org = get_object_or_404(Organisation, slug=org_slug)
+        org = signup_org(org_slug)
         return JsonResponse({
             'organisation': org.name,
             'waivers': [
@@ -59,10 +79,11 @@ class SignupApiView(View):
                 }
                 for w in active_waivers(org)
             ],
+            'fields': collected_fields(org),
         })
 
     def post(self, request, org_slug):
-        org = get_object_or_404(Organisation, slug=org_slug)
+        org = signup_org(org_slug)
 
         if request.content_type == 'application/json':
             try:
@@ -78,16 +99,12 @@ class SignupApiView(View):
             # Look successful so the bot moves on, but store nothing.
             return JsonResponse({'ok': True}, status=201)
 
-        key = f'signup-api:{org.pk}:{client_ip(request)}'
-        attempts = cache.get_or_set(key, 0, settings.SIGNUP_API_RATE_WINDOW)
-        if attempts >= settings.SIGNUP_API_RATE_LIMIT:
-            return JsonResponse({'errors': ['Too many applications from this address. Please try again later.']}, status=429)
-        try:
-            cache.incr(key)
-        except ValueError:  # window expired between the read and the increment
-            cache.set(key, 1, settings.SIGNUP_API_RATE_WINDOW)
+        if _rate_limited(org, request):
+            return JsonResponse(
+                {'errors': ['Too many applications from this address. Please try again later.']}, status=429,
+            )
 
-        application, errors = create_application(org, data)
+        _, errors = create_application(org, data)
         if errors:
             return JsonResponse({'errors': errors}, status=400)
         return JsonResponse({'ok': True}, status=201)

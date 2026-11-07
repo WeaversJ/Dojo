@@ -5,7 +5,7 @@
 {% block page_subtitle %}Products, sizes, and stock levels{% endblock %}
 
 {% block page_actions %}
-{% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
+{% if can_edit %}
 <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addProductModal">
     <i class="bi bi-plus-lg me-1"></i> New product
 </button>
@@ -38,7 +38,7 @@
                         <span class="badge bg-secondary">{{ product.get_category_display }}</span>
                         <span class="text-muted small ms-2">{{ product.total_in_stock }} total in stock</span>
                     </div>
-                    {% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
+                    {% if can_edit %}
                     <div class="d-flex gap-2">
                         <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#addVariantModal{{ product.pk }}">
                             <i class="bi bi-plus-lg me-1"></i> Add size
@@ -85,7 +85,7 @@
                                     {% if variant.is_low_stock %}<span class="badge bg-warning-subtle text-warning ms-1">Low</span>{% endif %}
                                 </td>
                                 <td class="small text-end">
-                                    {% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
+                                    {% if can_edit %}
                                     <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#adjustStockModal{{ variant.pk }}">
                                         <i class="bi bi-box-seam"></i> Adjust stock
                                     </button>
@@ -95,7 +95,7 @@
                                     {% endif %}
                                 </td>
                                 <td class="small text-end">
-                                    {% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
+                                    {% if can_edit %}
                                     <form method="post" action="{% url 'variant_delete' org_slug=org.slug pk=variant.pk %}" class="d-inline" onsubmit="return confirm('Delete size &quot;{{ variant.size }}&quot;?')">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
@@ -108,13 +108,13 @@
                     </table>
                 </div>
                 {% else %}
-                <p class="text-muted small mb-0">No sizes added yet — use "Add size" to set a price and starting stock level.</p>
+                <p class="text-muted small mb-0">No sizes added yet{% if can_edit %} — use "Add size" to set a price and starting stock level{% endif %}.</p>
                 {% endif %}
             </div>
         </div>
     </div>
 
-    {% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
+    {% if can_edit %}
     <!-- Edit product modal -->
     <div class="modal fade" id="editProductModal{{ product.pk }}" tabindex="-1">
         <div class="modal-dialog">
@@ -290,13 +290,13 @@
     <div class="col-12">
         <div class="text-center py-5 text-muted">
             <i class="bi bi-box-seam" style="font-size:2.5rem;opacity:.3;"></i>
-            <p class="mt-3">No products yet. Add your first product (e.g. "Adult Gi") to start tracking sizes, prices, and stock.</p>
+            <p class="mt-3">No products yet.{% if can_edit %} Add your first product (e.g. "Adult Gi") to start tracking sizes, prices, and stock.{% endif %}</p>
         </div>
     </div>
     {% endfor %}
 </div>
 
-{% if request.user.is_superuser or org_membership and org_membership.role == 'org_admin' %}
+{% if can_edit %}
 <!-- Add product modal -->
 <div class="modal fade" id="addProductModal" tabindex="-1">
     <div class="modal-dialog">
