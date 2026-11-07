@@ -79,6 +79,7 @@
                     <option value="unpaid" {% if status_filter == 'unpaid' %}selected{% endif %}>Unpaid</option>
                     <option value="paid" {% if status_filter == 'paid' %}selected{% endif %}>Paid</option>
                     <option value="overdue" {% if status_filter == 'overdue' %}selected{% endif %}>Overdue</option>
+                    <option value="cancelled" {% if status_filter == 'cancelled' %}selected{% endif %}>Cancelled</option>
                 </select>
                 <button type="submit" class="btn btn-sm btn-outline-secondary">Filter</button>
                 {% if q or status_filter %}<a href="{% url 'invoice_list' org_slug=org.slug %}" class="btn btn-sm btn-outline-secondary">Clear</a>{% endif %}
@@ -125,6 +126,8 @@
                     <td class="small">
                         {% if invoice.status == 'paid' %}
                         <span class="badge bg-success-subtle text-success">Paid</span>
+                        {% elif invoice.status == 'cancelled' %}
+                        <span class="badge bg-danger-subtle text-danger">Cancelled</span>
                         {% elif invoice.is_overdue %}
                         <span class="badge bg-warning-subtle text-warning">Overdue</span>
                         {% else %}

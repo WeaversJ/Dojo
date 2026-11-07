@@ -19,7 +19,7 @@
                         <h1 class="h5 mb-0">{{ invoice.period }}</h1>
                         <div class="text-muted small">For {{ first_name }} · due {{ invoice.due_date|date:"j M Y" }}</div>
                     </div>
-                    {% if balance_due == 0 %}<span class="badge bg-success-subtle text-success">Paid</span>{% endif %}
+                    {% if invoice.is_cancelled %}<span class="badge bg-secondary-subtle text-secondary">Cancelled</span>{% elif balance_due == 0 %}<span class="badge bg-success-subtle text-success">Paid</span>{% endif %}
                 </div>
 
                 {% if payment_error %}
@@ -28,7 +28,9 @@
                 {% if autopay_just_set_up %}
                 <div class="alert alert-success small"><i class="bi bi-check-circle me-1"></i> Automatic payments are set up with your {{ autopay_just_set_up.label }}. Future invoices will be paid automatically.</div>
                 {% endif %}
-                {% if balance_due == 0 %}
+                {% if invoice.is_cancelled %}
+                <div class="alert alert-secondary small mb-0"><i class="bi bi-x-circle me-1"></i> {{ org.name }} has cancelled this invoice, so there's nothing to pay.</div>
+                {% elif balance_due == 0 %}
                 <div class="alert alert-success small mb-0"><i class="bi bi-check-circle me-1"></i> This invoice is paid. Thank you!</div>
                 {% elif invoice.autopay_status == 'processing' %}
                 <div class="alert alert-info small mb-0"><i class="bi bi-hourglass-split me-1"></i> This is being collected by Direct Debit from your {{ autopay.label }}. It usually takes about 3 working days. Nothing else to do.</div>

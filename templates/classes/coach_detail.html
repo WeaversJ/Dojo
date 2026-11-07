@@ -21,13 +21,12 @@
                 {% if cls.schedule %}
                 <form method="post" action="{% url 'class_generate_sessions' org_slug=org.slug pk=cls.pk %}" class="d-flex flex-wrap gap-2 align-items-center">
                     {% csrf_token %}
-                    <span class="small text-muted text-nowrap">Generate sessions for the next</span>
-                    <select name="weeks" class="form-select form-select-sm" style="width:auto;" aria-label="How many weeks">
-                                <option value="4">4 weeks</option>
-                        <option value="6">6 weeks</option>
-                        <option value="8" selected>8 weeks</option>
-                        <option value="12">12 weeks</option>
-                    </select>
+                    <input type="hidden" name="next" value="coach_class_detail">
+                    <span class="small text-muted text-nowrap">Generate next</span>
+                    <input type="text" name="weeks" value="6" inputmode="numeric" pattern="[0-9]*" maxlength="2" required
+                           class="form-control form-control-sm text-center" style="width: 4.5rem;" aria-label="Number of weeks"
+                           oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                    <span class="small text-muted">weeks</span>
                     <button type="submit" class="btn btn-sm btn-dark text-nowrap">Generate</button>
                 </form>
                 {% else %}

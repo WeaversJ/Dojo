@@ -8,7 +8,8 @@ from dojo.csv_import import Importer, MemberFinder, RowError, name_key, parse_da
 
 from .models import BillingPolicy, Expense, Invoice, Payment
 
-STATUSES = {'unpaid': Invoice.Status.UNPAID, 'paid': Invoice.Status.PAID, 'overdue': Invoice.Status.UNPAID}
+STATUSES = {'unpaid': Invoice.Status.UNPAID, 'paid': Invoice.Status.PAID, 'overdue': Invoice.Status.UNPAID,
+            'cancelled': Invoice.Status.CANCELLED}
 METHODS = {value: value for value in Payment.Method.values} | {
     label.lower(): value for value, label in Payment.Method.choices
 } | {

@@ -108,6 +108,7 @@ class Invoice(models.Model):
         UNPAID = 'unpaid', 'Unpaid'
         PAID = 'paid', 'Paid'
         OVERDUE = 'overdue', 'Overdue'
+        CANCELLED = 'cancelled', 'Cancelled'
 
     organisation = models.ForeignKey(Organisation, on_delete=models.CASCADE, related_name='invoices')
     member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='invoices')
@@ -124,6 +125,11 @@ class Invoice(models.Model):
         help_text="How much of this invoice's overpayment (if any) has already been "
                   "pulled into a later invoice for the same member as a discount.",
     )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    cancel_reason = models.TextField(blank=True, help_text='Why this invoice was cancelled (e.g. issued in error).')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class AutoPayStatus(models.TextChoices):
@@ -145,6 +151,10 @@ class Invoice(models.Model):
         return f"{self.member} — {self.period} — £{self.amount} ({self.get_status_display()})"
 
     @property
+    def is_cancelled(self):
+        return self.status == self.Status.CANCELLED
+
+    @property
     def is_overdue(self):
         from datetime import date
         return self.status == self.Status.UNPAID and self.due_date < date.today()
@@ -158,7 +168,7 @@ class Invoice(models.Model):
     def balance_due(self):
         """What's left to pay: the amount less any payments already recorded."""
         from decimal import Decimal
-        if self.status == self.Status.PAID:
+        if self.status in (self.Status.PAID, self.Status.CANCELLED):
             return Decimal('0')
         return max(Decimal(self.amount) - self.amount_paid, Decimal('0'))
 

@@ -169,9 +169,9 @@ class GenerateSessionsTests(CoachCapabilityBase):
 
     def test_coach_page_shows_the_control_only_with_permission(self):
         page = self.url('coach_class_detail', pk=self.mine.pk)
-        self.assertNotContains(self.client.get(page), 'Generate sessions for the next')
+        self.assertNotContains(self.client.get(page), 'Generate next')
         self.grant('generate_sessions')
-        self.assertContains(self.client.get(page), 'Generate sessions for the next')
+        self.assertContains(self.client.get(page), 'Generate next')
 
 
 class ViewStockTests(CoachCapabilityBase):

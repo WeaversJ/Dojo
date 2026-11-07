@@ -109,7 +109,7 @@ class PortalView(View):
         org = member.organisation
 
         invoices = _visible_invoices(member)
-        outstanding = _with_pay_pages([inv for inv in invoices if inv.status != 'paid'])
+        outstanding = _with_pay_pages([inv for inv in invoices if inv.status not in ('paid', 'cancelled')])
 
         from progression.models import MemberProgression
         current_grade = (
@@ -240,7 +240,7 @@ class PortalPaymentHistoryView(View):
         member = _portal_member(token, 'billing')
 
         invoices = _visible_invoices(member)
-        outstanding = _with_pay_pages([inv for inv in invoices if inv.status != 'paid'])
+        outstanding = _with_pay_pages([inv for inv in invoices if inv.status not in ('paid', 'cancelled')])
         paid = [inv for inv in invoices if inv.status == 'paid']
 
         return render(request, 'portal/payments.html', {
