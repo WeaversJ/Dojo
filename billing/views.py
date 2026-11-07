@@ -64,7 +64,7 @@ class InvoiceListView(InvoiceAccessMixin, ListView):
             .order_by('-due_date', 'member__name', '-pk')
         )
         status = self.request.GET.get('status', '')
-        if status in ('unpaid', 'paid', 'overdue'):
+        if status in ('unpaid', 'paid', 'overdue', 'cancelled'):
             qs = qs.filter(status=status)
         q = self.request.GET.get('q', '').strip()
         if q:
@@ -286,9 +286,52 @@ class InvoiceDetailView(InvoiceAccessMixin, DetailView):
         return context
 
 
+class CancelInvoiceView(BillingManagerMixin, View):
+    """Cancel an invoice issued in error. The record is kept (status Cancelled, who/when/why)
+    so incorrect invoicing can be tracked; any product stock on it is returned, and any
+    overpayment credit it used goes back to the member."""
+    def post(self, request, org_slug, pk):
+        from .credit import give_back_credit
+
+        invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        back = redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
+        if invoice.is_cancelled:
+            messages.info(request, 'This invoice is already cancelled.')
+            return back
+        if invoice.payments.exists():
+            messages.error(request, 'This invoice has payments recorded against it, so it can\'t be cancelled.')
+            return back
+        if invoice.autopay_status in ('collecting', 'processing'):
+            messages.error(request, 'A payment for this invoice is being collected, so it can\'t be cancelled yet.')
+            return back
+
+        with transaction.atomic():
+            invoice.status = Invoice.Status.CANCELLED
+            invoice.cancelled_at = datetime.now(tz=timezone.utc)
+            invoice.cancelled_by = request.user
+            invoice.cancel_reason = request.POST.get('reason', '').strip()
+            # Nothing is to be collected for it any more.
+            invoice.autopay_status = ''
+            invoice.save(update_fields=['status', 'cancelled_at', 'cancelled_by', 'cancel_reason', 'autopay_status'])
+            give_back_credit(invoice)
+            for item in invoice.items.select_related('variant'):
+                item.variant.adjust_stock(
+                    item.quantity,
+                    reason=StockMovement.Reason.RETURN,
+                    invoice=invoice,
+                    notes=f'Invoice #{invoice.pk} cancelled',
+                    user=request.user,
+                )
+        messages.success(request, 'Invoice cancelled.')
+        return back
+
+
 class MarkPaidView(InvoiceAccessMixin, View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(self.invoice_queryset(), pk=pk)
+        if invoice.is_cancelled:
+            messages.error(request, 'A cancelled invoice can\'t be marked as paid.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         invoice.status = Invoice.Status.PAID
         invoice.save(update_fields=['status'])
         messages.success(request, 'Invoice marked as paid.')
@@ -298,6 +341,9 @@ class MarkPaidView(InvoiceAccessMixin, View):
 class MarkUnpaidView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        if invoice.is_cancelled:
+            messages.error(request, 'A cancelled invoice can\'t be marked as unpaid.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         invoice.status = Invoice.Status.UNPAID
         invoice.save(update_fields=['status'])
         messages.success(request, 'Invoice marked as unpaid.')
@@ -307,6 +353,9 @@ class MarkUnpaidView(BillingManagerMixin, View):
 class RecordPaymentView(InvoiceAccessMixin, View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(self.invoice_queryset(), pk=pk)
+        if invoice.is_cancelled:
+            messages.error(request, 'Payments can\'t be recorded against a cancelled invoice.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         amount_raw = request.POST.get('amount', '').strip()
         method = request.POST.get('method', Payment.Method.MANUAL)
         notes = request.POST.get('notes', '').strip()
@@ -442,6 +491,7 @@ class BulkInvoiceView(BillingManagerMixin, View):
         if period_label:
             already_invoiced_ids = set(
                 Invoice.objects.filter(organisation=self.org, period=period_label)
+                .exclude(status=Invoice.Status.CANCELLED)
                 .values_list('member_id', flat=True)
             )
 
@@ -546,6 +596,7 @@ class BulkInvoiceView(BillingManagerMixin, View):
 
         already = set(
             Invoice.objects.filter(organisation=self.org, period=period_label)
+            .exclude(status=Invoice.Status.CANCELLED)
             .filter(member_id__in=[int(i) for i in selected_ids])
             .values_list('member_id', flat=True)
         )
@@ -633,6 +684,9 @@ class BulkInvoiceView(BillingManagerMixin, View):
 class SendInvoiceEmailView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        if invoice.is_cancelled:
+            messages.error(request, 'This invoice is cancelled, so it can\'t be sent.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         if invoice.run_id and invoice.run.status == 'awaiting_review':
             messages.error(request, 'This invoice is part of an automatic batch waiting to be checked. '
                                     'Send the whole batch from Automatic invoices.')
@@ -652,6 +706,9 @@ class SendInvoiceEmailView(BillingManagerMixin, View):
 class SendReminderEmailView(BillingManagerMixin, View):
     def post(self, request, org_slug, pk):
         invoice = get_object_or_404(Invoice, pk=pk, organisation=self.org)
+        if invoice.is_cancelled:
+            messages.error(request, 'This invoice is cancelled, so there\'s nothing to remind them about.')
+            return redirect('invoice_detail', org_slug=self.org.slug, pk=pk)
         from .emails import send_reminder_email
         try:
             ok, result = send_reminder_email(invoice, request=request)
