@@ -13,7 +13,7 @@ from billing.models import AutoPay, Expense, Invoice, Payment, PaymentSettings
 from billing.payment_forms import apply_post
 from billing.test_payments import CARD, form
 from classes.importers import parse_schedule
-from classes.models import Attendance, Class, Session, SessionCoach
+from classes.models import Attendance, Class, Session, SessionCoach, SessionHelper
 from dojo.csv_import import RowError, parse_date, parse_money, parse_yes_no
 from members.models import Member
 from organisations.features import FEATURES_BY_KEY
@@ -193,6 +193,22 @@ class CoachAttendanceImportTests(ImportTestBase):
 
     def test_other_clubs_staff_are_not_matched(self):
         response = self.preview('coach-attendance', 'class_name,date,coach_name\nJuniors,2026-03-14,other\n')
+        self.assertEqual(response.context['counts']['error'], 1)
+
+
+class HelperAttendanceImportTests(ImportTestBase):
+    def test_marks_helpers_and_updates_on_reimport(self):
+        self.do_import('helper-attendance', (
+            'class_name,date,helper_name,present\nJuniors,2026-03-14,Alice Able,yes\nJuniors,2026-03-21,Alice Able,no\n'
+        ))
+        marks = dict(SessionHelper.objects.values_list('session__date', 'present'))
+        self.assertEqual(marks, {date(2026, 3, 14): True, date(2026, 3, 21): False})
+        self.do_import('helper-attendance', 'class_name,date,helper_name,present\nJuniors,2026-03-21,Alice Able,yes\n')
+        self.assertEqual(SessionHelper.objects.count(), 2)
+        self.assertTrue(SessionHelper.objects.get(session__date=date(2026, 3, 21)).present)
+
+    def test_unknown_helper_is_a_row_error(self):
+        response = self.preview('helper-attendance', 'class_name,date,helper_name\nJuniors,2026-03-14,Nobody Here\n')
         self.assertEqual(response.context['counts']['error'], 1)
 
 
