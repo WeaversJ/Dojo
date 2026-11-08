@@ -192,6 +192,7 @@ IMPORTERS = (
     'classes.importers.ClassImporter',
     'classes.importers.RegisterImporter',
     'classes.importers.CoachAttendanceImporter',
+    'classes.importers.HelperAttendanceImporter',
     'billing.importers.InvoiceImporter',
     'billing.importers.ExpenseImporter',
 )

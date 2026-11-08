@@ -5,7 +5,7 @@ from collections import defaultdict
 
 from dojo.csv_import import Importer, MemberFinder, RowError, name_key, parse_date, parse_yes_no
 
-from .models import Attendance, Class, Session, SessionCoach
+from .models import Attendance, Class, Session, SessionCoach, SessionHelper
 
 DAYS = {
     'mon': 0, 'monday': 0, 'tue': 1, 'tues': 1, 'tuesday': 1, 'wed': 2, 'weds': 2, 'wednesday': 2,
@@ -207,3 +207,39 @@ class CoachAttendanceImporter(SessionRowsMixin, Importer):
             SessionCoach.objects.update_or_create(session=session, coach=coach, defaults={'present': present})
             count += 1
         return f'{count} coach mark{"s" if count != 1 else ""} imported.'
+
+
+class HelperAttendanceImporter(SessionRowsMixin, Importer):
+    key = 'helper-attendance'
+    title = 'Helper attendance'
+    intro = ('Marks helpers present or absent at past sessions, adding sessions that don\'t exist yet. '
+             'Helpers are members of the club, so they must already exist as members; importing the same '
+             'row again just updates the mark.')
+    columns = (
+        ('class_name', True, 'Must match a class name.'),
+        ('date', True, 'e.g. 2026-03-14 or 14/03/2026.'),
+        ('helper_name', True, 'Must match a member\'s name. "Surname Firstname" is tried too.'),
+        ('helper_email', False, 'Only needed to tell apart two members with the same name.'),
+        ('present', False, 'Yes or no; blank means absent.'),
+    )
+    example = 'class_name,date,helper_name,present\nJuniors,14/03/2026,Alice Able,yes'
+    done_url = 'class_list'
+
+    def prepare(self):
+        super().prepare()
+        self.members = MemberFinder(self.org)
+
+    def plan_row(self, row):
+        cls, day = self.class_and_date(row)
+        helper = self.members.find(row.get('helper_name', ''), row.get('helper_email', ''))
+        present = parse_yes_no(row.get('present'), default=False)
+        mark = 'present' if present else 'absent'
+        return 'create', f'{helper.name}: helper {mark} at {cls.name} on {day:%d %b %Y}', (cls, day, helper, present)
+
+    def save(self, planned):
+        count = 0
+        for _, _, (cls, day, helper, present) in planned:
+            session = self.session_for(cls, day)
+            SessionHelper.objects.update_or_create(session=session, helper=helper, defaults={'present': present})
+            count += 1
+        return f'{count} helper mark{"s" if count != 1 else ""} imported.'

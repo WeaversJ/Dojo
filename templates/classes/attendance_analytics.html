@@ -197,7 +197,22 @@
                             </select>
                         </div>
                     </div>
-                    <p class="text-muted small mt-3 mb-0">Exports each member's attendance per session. Leave dates blank for all time.</p>
+                    <div class="mt-3">
+                        <label class="form-label small fw-semibold d-block">Include</label>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="roles" value="member" id="exp-members" checked>
+                            <label class="form-check-label small" for="exp-members">Members</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="roles" value="coach" id="exp-coaches" checked>
+                            <label class="form-check-label small" for="exp-coaches">Coaches</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="roles" value="helper" id="exp-helpers" checked>
+                            <label class="form-check-label small" for="exp-helpers">Helpers</label>
+                        </div>
+                    </div>
+                    <p class="text-muted small mt-3 mb-0">Exports attendance per session, with a Role column (Member, Coach or Helper). Leave dates blank for all time.</p>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>

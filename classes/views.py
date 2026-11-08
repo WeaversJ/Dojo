@@ -944,7 +944,7 @@ class AttendanceExportView(AttendanceScopeMixin, View):
     def get(self, request, org_slug):
         import csv
         from django.http import HttpResponse
-        from .models import Session, Attendance
+        from .models import Session, Attendance, SessionCoach, SessionHelper
 
         date_from_raw = request.GET.get('date_from', '')
         date_to_raw = request.GET.get('date_to', '')
@@ -968,11 +968,28 @@ class AttendanceExportView(AttendanceScopeMixin, View):
         if class_pk:
             sessions = sessions.filter(assigned_class_id=class_pk)
 
-        attendance = (
-            Attendance.objects.filter(session__in=sessions)
-            .select_related('member', 'session', 'session__assigned_class')
-            .order_by('session__date', 'session__assigned_class__name', 'member__name')
-        )
+        # Which kinds of attendance to include; everything unless the form narrowed it down.
+        roles = set(request.GET.getlist('roles')) & {'member', 'coach', 'helper'} or {'member', 'coach', 'helper'}
+
+        # (date, class, role order, name, role label, present)
+        rows = []
+        if 'member' in roles:
+            for a in Attendance.objects.filter(session__in=sessions).select_related(
+                'member', 'session', 'session__assigned_class',
+            ):
+                rows.append((a.session.date, a.session.assigned_class.name, 0, a.member.name, 'Member', a.present))
+        if 'coach' in roles:
+            for c in SessionCoach.objects.filter(session__in=sessions).select_related(
+                'coach', 'session', 'session__assigned_class',
+            ):
+                name = c.coach.get_full_name() or c.coach.username
+                rows.append((c.session.date, c.session.assigned_class.name, 1, name, 'Coach', c.present))
+        if 'helper' in roles:
+            for h in SessionHelper.objects.filter(session__in=sessions).select_related(
+                'helper', 'session', 'session__assigned_class',
+            ):
+                rows.append((h.session.date, h.session.assigned_class.name, 2, h.helper.name, 'Helper', h.present))
+        rows.sort(key=lambda r: (r[0], r[1], r[2], r[3].lower()))
 
         response = HttpResponse(content_type='text/csv')
         label_parts = []
@@ -984,12 +1001,7 @@ class AttendanceExportView(AttendanceScopeMixin, View):
         response['Content-Disposition'] = f'attachment; filename="{self.org.slug}-attendance-{suffix}.csv"'
 
         writer = csv.writer(response)
-        writer.writerow(['Date', 'Class', 'Member', 'Present'])
-        for a in attendance:
-            writer.writerow([
-                a.session.date.isoformat(),
-                a.session.assigned_class.name,
-                a.member.name,
-                'Yes' if a.present else 'No',
-            ])
+        writer.writerow(['Date', 'Class', 'Name', 'Role', 'Present'])
+        for day, class_name, _, name, role, present in rows:
+            writer.writerow([day.isoformat(), class_name, name, role, 'Yes' if present else 'No'])
         return response
