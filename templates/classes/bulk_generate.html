@@ -1,0 +1,70 @@
+{% extends 'org/base.html' %}
+
+{% block title %}Generate registers{% endblock %}
+{% block page_title %}Generate registers{% endblock %}
+{% block page_subtitle %}For several classes at once{% endblock %}
+
+{% block page_actions %}
+<a href="{% url 'class_list' org_slug=org.slug %}" class="btn btn-outline-secondary btn-sm">Back to classes</a>
+{% endblock %}
+
+{% block main_content %}
+<form method="post">
+    {% csrf_token %}
+    <div class="card border-0 shadow-sm mb-3">
+        <div class="card-header bg-white border-bottom py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <h6 class="mb-0">Choose classes</h6>
+                <div class="text-muted small">Sessions that already exist are kept, so it's safe to generate again.</div>
+            </div>
+            <div class="form-check mb-0">
+                <input class="form-check-input" type="checkbox" id="select-all">
+                <label class="form-check-label small" for="select-all">Select all</label>
+            </div>
+        </div>
+        <ul class="list-group list-group-flush">
+            {% for row in rows %}
+            <li class="list-group-item px-3 py-3">
+                <div class="form-check form-switch d-flex align-items-center gap-3 ps-0">
+                    <input class="form-check-input class-toggle ms-0 flex-shrink-0" type="checkbox" role="switch" name="classes"
+                           value="{{ row.cls.pk }}" id="class-{{ row.cls.pk }}"
+                           {% if row.has_schedule %}checked{% else %}disabled{% endif %} style="width:2.5em;height:1.3em;">
+                    <label class="form-check-label flex-grow-1" for="class-{{ row.cls.pk }}">
+                        <span class="fw-semibold">{{ row.cls.name }}</span>
+                        <span class="d-block small text-muted">{{ row.cls.schedule_display }}</span>
+                        <span class="d-block small text-muted">
+                            {% if not row.has_schedule %}No weekly schedule, so registers can't be generated.
+                            {% elif row.upcoming %}{{ row.upcoming }} upcoming session{{ row.upcoming|pluralize }}, up to {{ row.last.date|date:"j M Y" }}.
+                            {% else %}No upcoming sessions yet.{% endif %}
+                        </span>
+                    </label>
+                </div>
+            </li>
+            {% empty %}
+            <li class="list-group-item text-muted small py-4 text-center">No classes yet.</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div class="card border-0 shadow-sm">
+        <div class="card-body d-flex flex-wrap gap-2 align-items-center">
+            <span class="small text-muted text-nowrap">Generate next</span>
+            <input type="text" name="weeks" value="{{ weeks }}" inputmode="numeric" pattern="[0-9]*" maxlength="2" required
+                   class="form-control form-control-sm text-center" style="width:4.5rem;" aria-label="Number of weeks"
+                   oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+            <span class="small text-muted">weeks</span>
+            <button type="submit" class="btn btn-dark btn-sm ms-sm-auto">Generate registers</button>
+        </div>
+    </div>
+</form>
+<script>
+(function () {
+    var all = document.getElementById('select-all');
+    var boxes = Array.from(document.querySelectorAll('.class-toggle:not(:disabled)'));
+    function sync() { all.checked = boxes.length > 0 && boxes.every(function (b) { return b.checked; }); }
+    all.addEventListener('change', function () { boxes.forEach(function (b) { b.checked = all.checked; }); });
+    boxes.forEach(function (b) { b.addEventListener('change', sync); });
+    sync();
+})();
+</script>
+{% endblock %}

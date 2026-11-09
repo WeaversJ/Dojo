@@ -4,6 +4,7 @@ from . import views
 urlpatterns = [
     path('', views.ClassListView.as_view(), name='class_list'),
     path('add/', views.ClassCreateView.as_view(), name='class_add'),
+    path('generate-registers/', views.BulkGenerateSessionsView.as_view(), name='class_bulk_generate'),
     path('<int:pk>/', views.ClassDetailView.as_view(), name='class_detail'),
     path('<int:pk>/edit/', views.ClassUpdateView.as_view(), name='class_edit'),
     path('<int:pk>/enrol/', views.EnrolMemberView.as_view(), name='class_enrol'),

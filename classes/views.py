@@ -367,6 +367,63 @@ class RemoveFromWaitingListView(OrgAdminMixin, View):
         return redirect('class_detail', org_slug=self.org.slug, pk=cls.pk)
 
 
+def _parse_weeks(value, default=8):
+    try:
+        return max(1, min(int(value), 52))
+    except (ValueError, TypeError):
+        return default
+
+
+def generate_sessions(cls, weeks):
+    """Create the class's sessions for the next `weeks` weeks (existing ones are kept). Returns how many were new."""
+    from_date = date.today()
+    to_date = from_date + timedelta(weeks=weeks)
+    created = 0
+    current = from_date
+    while current < to_date:
+        for entry in cls.schedule:
+            if current.weekday() == entry['day']:
+                _, was_new = Session.objects.get_or_create(
+                    assigned_class=cls, date=current, defaults={'leader': cls.default_leader},
+                )
+                if was_new:
+                    created += 1
+        current += timedelta(days=1)
+    return created
+
+
+class BulkGenerateSessionsView(OrgAdminMixin, View):
+    """Pick several classes and generate their registers (sessions) in one go."""
+
+    def _rows(self):
+        today = date.today()
+        rows = []
+        for cls in Class.objects.filter(organisation=self.org).order_by('name'):
+            upcoming = cls.sessions.filter(date__gte=today, is_cancelled=False).order_by('date')
+            rows.append({'cls': cls, 'upcoming': upcoming.count(), 'last': upcoming.last(), 'has_schedule': bool(cls.schedule)})
+        return rows
+
+    def get(self, request, org_slug):
+        return render(request, 'classes/bulk_generate.html', {
+            'org': self.org, 'org_membership': self.org_membership, 'rows': self._rows(), 'weeks': 6,
+        })
+
+    def post(self, request, org_slug):
+        weeks = _parse_weeks(request.POST.get('weeks'), 6)
+        chosen = Class.objects.filter(organisation=self.org, pk__in=request.POST.getlist('classes'))
+        chosen = [cls for cls in chosen if cls.schedule]
+        if not chosen:
+            messages.warning(request, 'Choose at least one class that has a weekly schedule.')
+            return redirect('class_bulk_generate', org_slug=self.org.slug)
+        total = sum(generate_sessions(cls, weeks) for cls in chosen)
+        messages.success(
+            request,
+            f'{total} session{"s" if total != 1 else ""} generated across {len(chosen)} '
+            f'class{"es" if len(chosen) != 1 else ""} for the next {weeks} week{"s" if weeks != 1 else ""}.',
+        )
+        return redirect('class_list', org_slug=self.org.slug)
+
+
 class GenerateSessionsView(ClassCapabilityMixin, View):
     required_capabilities = ('generate_sessions',)
 
@@ -376,24 +433,7 @@ class GenerateSessionsView(ClassCapabilityMixin, View):
             messages.warning(request, 'This class has no schedule set.')
             return _back_to_class(self, request, cls)
 
-        try:
-            weeks = max(1, min(int(request.POST.get('weeks', 8)), 52))
-        except (ValueError, TypeError):
-            weeks = 8
-
-        from_date = date.today()
-        to_date = from_date + timedelta(weeks=weeks)
-        created = 0
-        current = from_date
-        while current < to_date:
-            for entry in cls.schedule:
-                if current.weekday() == entry['day']:
-                    _, was_new = Session.objects.get_or_create(
-                        assigned_class=cls, date=current, defaults={'leader': cls.default_leader},
-                    )
-                    if was_new:
-                        created += 1
-            current += timedelta(days=1)
+        created = generate_sessions(cls, _parse_weeks(request.POST.get('weeks', 8)))
 
         messages.success(request, f'{created} session{"s" if created != 1 else ""} generated.')
         return _back_to_class(self, request, cls)
