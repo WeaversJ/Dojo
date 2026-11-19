@@ -21,8 +21,9 @@
 {% if available_members %}<form id="add-member-form" method="post" action="{% url 'class_enrol' org_slug=org.slug pk=cls.pk %}">{% csrf_token %}<input type="hidden" name="next" value="register"><input type="hidden" name="session_pk" value="{{ session.pk }}"></form>{% endif %}
 {% if available_coaches %}<form id="add-coach-form" method="post" action="{% url 'class_coach_add' org_slug=org.slug pk=cls.pk %}">{% csrf_token %}<input type="hidden" name="next" value="register"><input type="hidden" name="session_pk" value="{{ session.pk }}"></form>{% endif %}
 {% if available_helpers %}<form id="add-helper-form" method="post" action="{% url 'class_helper_add' org_slug=org.slug pk=cls.pk %}">{% csrf_token %}<input type="hidden" name="next" value="register"><input type="hidden" name="session_pk" value="{{ session.pk }}"></form>{% endif %}
-<div class="row">
-    <div class="col-lg-7">
+{% comment %}Desktop: attendance on the left, coaches and helpers on the right, notes and Save across the bottom.
+   Narrower screens (phones, upright tablets) stack them in the same order.{% endcomment %}
+<div>
 
         {% if session.is_cancelled %}
         <div class="alert alert-warning">This session is marked as cancelled.</div>
@@ -30,7 +31,9 @@
 
         <form method="post" id="register-form">
             {% csrf_token %}
-            <div class="card border-0 shadow-sm mb-3">
+            <div class="row g-3 align-items-start mb-3 register-columns">
+            <div class="col-lg-7">
+            <div class="card border-0 shadow-sm mb-0">
                 <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
                     <h6 class="mb-0">Attendance
                         <span class="text-muted fw-normal small ms-1">{{ enrolled_count }} enrolled</span>
@@ -129,7 +132,9 @@
                 </div>
                 {% endif %}
             </div>
+            </div>{# end attendance column #}
 
+            <div class="col-lg-5">
             {% if coaches_on_holiday %}
             <div class="alert alert-warning py-2 small mb-3">
                 <i class="bi bi-airplane me-1"></i>
@@ -222,7 +227,7 @@
             </div>
             {% endif %}
 
-            <div class="card border-0 shadow-sm mb-3">
+            <div class="card border-0 shadow-sm mb-0">
                 <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
                     <h6 class="mb-0">Helpers
                         <span class="text-muted fw-normal small ms-1">{{ helpers|length }} assigned</span>
@@ -293,6 +298,8 @@
                 </div>
                 {% endif %}
             </div>
+            </div>{# end coaches and helpers column #}
+            </div>
 
             <div class="card border-0 shadow-sm mb-4">
                 <div class="card-header bg-white border-bottom py-3">
@@ -311,7 +318,6 @@
             </div>
         </form>
 
-    </div>
 </div>
 {% endblock %}
 
