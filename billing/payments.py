@@ -88,10 +88,18 @@ def options_for(invoice):
         'pay_url': pay_url(invoice),
         'payment_reference': invoice.payment_reference,
         'card_payments': stripe_keys(org) is not None and org.has_feature('billing'),
+        'online_methods_text': online_methods_text(payment_settings),
         'bank_transfer': bank,
         'cash_payments': bool(payment_settings and payment_settings.accept_cash),
         'payment_instructions': payment_settings.instructions if payment_settings else '',
     }
+
+
+def online_methods_text(payment_settings):
+    """How members can pay through Stripe, as the club's last Stripe check found it ('' if never checked)."""
+    from .stripe_setup import methods_text
+    stored = payment_settings.get_secrets().get('stripe_methods', '') if payment_settings else ''
+    return methods_text(stored.split())
 
 
 def _pence(amount):

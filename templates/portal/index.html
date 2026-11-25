@@ -51,7 +51,10 @@
             <div>
                 {% if member.has_active_subscription %}
                 <p class="fw-semibold mb-0"><i class="bi bi-check-circle-fill text-success me-1"></i> Autopay active</p>
-                <p class="text-muted small mb-0">£{{ member.monthly_fee|floatformat:2 }}/month — card charged automatically each month.</p>
+                <p class="text-muted small mb-0">£{{ member.monthly_fee|floatformat:2 }}/month — taken automatically each month.</p>
+                {% elif member.subscription_status == 'incomplete' %}
+                <p class="fw-semibold mb-0"><i class="bi bi-hourglass-split text-primary me-1"></i> Autopay starting</p>
+                <p class="text-muted small mb-0">Your first Direct Debit payment usually takes about 3 working days to clear. Nothing else to do.</p>
                 {% elif member.subscription_status == 'cancelling' %}
                 <p class="fw-semibold mb-0"><i class="bi bi-clock text-warning me-1"></i> Autopay cancelling</p>
                 <p class="text-muted small mb-0">Your subscription will end at the close of the current billing period.</p>
@@ -64,7 +67,14 @@
                 {% endif %}
             </div>
             <div class="flex-shrink-0">
-                {% if member.has_active_subscription or member.subscription_status == 'cancelling' %}
+                {% if member.subscription_status == 'incomplete' %}
+                <form method="post" action="{% url 'portal_billing_portal' token=member.token %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-secondary w-100">
+                        Manage payment method
+                    </button>
+                </form>
+                {% elif member.has_active_subscription or member.subscription_status == 'cancelling' %}
                 <div class="d-flex flex-column gap-2">
                     <form method="post" action="{% url 'portal_billing_portal' token=member.token %}">
                         {% csrf_token %}
