@@ -698,6 +698,8 @@ class OrgSettingsView(OrgAdminMixin, View):
         ('general', 'General', 'building', 'Your club\'s name and contact details.'),
         ('location', 'Location', 'geo-alt', 'Where your club trains, what it teaches and what it\'s about. Members '
                                             'use this to find you in the Dojo club finder.'),
+        ('website', 'Website', 'window', 'Show your live timetable on your own website and on your Dojo club page, so '
+                                         'people can see when you train and ask to try a class.'),
         ('appearance', 'Appearance', 'palette', 'Colours and logo for your club\'s Dojo.'),
         ('features', 'Features', 'toggles', 'Switch off anything your club doesn\'t use and it disappears from Dojo. '
                                             'Nothing is deleted: switch a feature back on and its data is still there.'),
@@ -753,6 +755,26 @@ class OrgSettingsView(OrgAdminMixin, View):
                 context['email_dns_check'] = dns_check.check(email_settings)
         return context
 
+    def _website_context(self):
+        """Settings → Website: the public timetable, the sites allowed to embed it, and the snippet."""
+        from datetime import timedelta
+
+        from django.conf import settings as django_settings
+        from django.utils import timezone
+
+        from classes.timetable import public_classes
+        from members.models import MemberApplication
+        site = django_settings.SITE_URL.rstrip('/')
+        recent = MemberApplication.objects.filter(organisation=self.org, submitted_at__gte=timezone.now() - timedelta(days=30))
+        return {
+            'embed_script_url': site + reverse('embed_script'),
+            'embed_preview_url': reverse('embed_timetable', kwargs={'org_slug': self.org.slug}),
+            'embed_domains_text': '\n'.join(self.org.embed_domains),
+            'public_classes': public_classes(self.org),
+            'website_applications': recent.filter(source=MemberApplication.Source.WIDGET).count(),
+            'finder_applications': recent.filter(source=MemberApplication.Source.FINDER).count(),
+        }
+
     def _context(self):
         from .features import feature_rows
         from .optional_fields import field_groups
@@ -777,6 +799,7 @@ class OrgSettingsView(OrgAdminMixin, View):
             }),
             **self._email_context(),
             **self._payments_context(),
+            **self._website_context(),
             'staff_without_two_factor': (
                 OrganisationMember.objects.filter(organisation=self.org, user__two_factor__isnull=True)
                 .select_related('user').order_by('user__first_name', 'user__username')
@@ -948,6 +971,20 @@ class OrgSettingsView(OrgAdminMixin, View):
                 messages.success(request, 'Location saved.' if self.org.listed_in_finder
                                  else 'Location saved. Your club is hidden from the Dojo club finder.')
             return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#location")
+
+        if action == 'website':
+            from classes.embed_views import parse_domains
+            domains, errors = parse_domains(request.POST.get('embed_domains', ''))
+            for error in errors:
+                messages.error(request, error)
+            self.org.settings = {**(self.org.settings or {}),
+                                 'public_timetable': request.POST.get('public_timetable') == '1',
+                                 'timetable_places': request.POST.get('timetable_places') == '1',
+                                 'embed_domains': domains}
+            self.org.save(update_fields=['settings'])
+            messages.success(request, 'Website settings saved.' if self.org.public_timetable
+                             else 'Website settings saved. Your timetable isn\'t public, so the widget won\'t show.')
+            return redirect(f"{reverse('org_settings', kwargs={'org_slug': self.org.slug})}#website")
 
         if action == 'security':
             try:

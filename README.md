@@ -41,6 +41,7 @@ Dojo is sport and activity agnostic. Whether you run a judo club, a dance school
 - **Attendance:** per-session registers, at-risk member detection and an analytics dashboard
 - **Calendar:** month, week and list views of upcoming sessions and staff holidays
 - **Public signup:** share a link for prospective members to apply, then approve or reject from Dojo
+- **Website timetable:** paste one line into your club's website (Wix, WordPress, Squarespace or your own) to show your live timetable, with cancellations and places left. "Try a class" opens your join form with the class and your intro offer filled in, and the same timetable appears on your Dojo club page. Set it up under Settings → Website
 - **Announcements:** email the whole club or a single class
 
 ### Progression
@@ -149,6 +150,7 @@ Migrations run automatically. Upgrading from a version that used MySQL 8.0 moves
 - [x] Two-step sign-in and admin account controls
 - [x] Member portal, document management and signup e-signature
 - [x] Public signup and approval
+- [x] Website timetable widget and "Try a class"
 - [x] Calendar, financial reports and audit logging
 
 ### Planned

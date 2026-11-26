@@ -5,7 +5,8 @@ from django.contrib.auth import views as auth_views
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme, urlencode
 from django.views import View
 
 from organisations import disciplines
@@ -32,7 +33,7 @@ class AccountRequiredMixin:
 
     def dispatch(self, request, *args, **kwargs):
         if not request.user.is_authenticated:
-            return redirect(f"{reverse('network_login')}?next={request.get_full_path()}")
+            return redirect(f"{reverse('network_login')}?{urlencode({'next': request.get_full_path()})}")
         self.account = accounts.account_for(request.user)
         return super().dispatch(request, *args, **kwargs)
 
@@ -368,6 +369,13 @@ class ClubView(View):
         from billing import promos
         from members.signup import active_waivers
         club_reviews = list(org.reviews.select_related('account')[:50])
+        timetable_days, try_base = [], ''
+        if org.public_timetable:
+            from classes import timetable
+            from classes.embed_views import try_link_base
+            timetable_days = timetable.build(org, timezone.localdate(), weeks=2)
+            if status.get(org.pk, '') == '':
+                try_base = try_link_base(org, reverse('network_join', kwargs={'slug': org.slug}), 'finder')
         return render(request, 'network/club.html', {
             'active': 'finder',
             'org': org, 'account': account, 'maps_key': maps_key(), 'maps_map_id': maps_map_id(),
@@ -378,6 +386,7 @@ class ClubView(View):
             'review_summary': reviews.summary(org), 'reviews': club_reviews,
             'my_review': org.reviews.filter(account=account).first() if account else None,
             'can_review': reviews.can_review(account, org),
+            'timetable_days': timetable_days, 'try_base': try_base,
         })
 
 
@@ -473,4 +482,9 @@ class JoinClubView(AccountRequiredMixin, View):
             return redirect('network_club', slug=org.slug)
         url = reverse('member_signup', kwargs={'org_slug': org.slug})
         code = request.GET.get('code', '')
-        return redirect(f'{url}?code={code}' if code.isalnum() else url)
+        # Keep what the club page's timetable passed on: the class picked with "Try a class", and that
+        # the visitor came from the club page.
+        params = {key: request.GET[key] for key in ('class', 'source') if request.GET.get(key, '').isalnum()}
+        if code.isalnum():
+            params['code'] = code
+        return redirect(f'{url}?{urlencode(params)}' if params else url)

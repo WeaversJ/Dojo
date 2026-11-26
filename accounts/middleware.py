@@ -27,7 +27,9 @@ class TwoFactorMiddleware:
 
     @staticmethod
     def _exempt(path):
-        prefixes = ['/2fa/', reverse('logout'), settings.MEDIA_URL, '/' + settings.STATIC_URL.lstrip('/')]
+        # The website timetable widget is public, and shown in other sites' pages, where a redirect can't be followed.
+        prefixes = ['/2fa/', reverse('logout'), settings.MEDIA_URL, '/' + settings.STATIC_URL.lstrip('/'),
+                    reverse('embed_script'), '/embed/']
         return any(path.startswith(prefix) for prefix in prefixes)
 
     @staticmethod

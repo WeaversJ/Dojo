@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en" data-theme="{{ theme }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>{{ org.name }} timetable</title>
+    <style>
+        :root {
+            --dt-accent: {{ colours.accent }}; --dt-on-accent: {{ colours.on_accent }};
+            --dt-text: #1d1d1f; --dt-muted: #6b6b70; --dt-line: #e5e5ea; --dt-surface: #ffffff; --dt-radius: 8px;
+            color-scheme: light;
+        }
+        [data-theme="dark"] {
+            --dt-text: #f2f2f7; --dt-muted: #a1a1a6; --dt-line: #3a3a3c; --dt-surface: #1c1c1e;
+            color-scheme: dark;
+        }
+        html, body { margin: 0; background: transparent; }
+        body { font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--dt-text); }
+        .dt-frame { background: var(--dt-surface); border: 1px solid var(--dt-line); border-radius: 12px; padding: 1rem 1.125rem; }
+        .dt-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem .75rem; margin-bottom: .75rem; }
+        .dt-nav { display: flex; align-items: center; gap: .375rem; }
+        .dt-range { font-weight: 600; font-size: .9375rem; }
+        .dt-arrow { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: var(--dt-radius);
+                    border: 1px solid var(--dt-line); color: var(--dt-text); text-decoration: none; font-size: 1rem; line-height: 1; }
+        .dt-arrow:hover { background: color-mix(in srgb, var(--dt-text) 6%, transparent); }
+        .dt-arrow[aria-disabled="true"] { opacity: .35; pointer-events: none; }
+        .dt-select { font: inherit; font-size: .875rem; color: var(--dt-text); background: var(--dt-surface); border: 1px solid var(--dt-line);
+                     border-radius: var(--dt-radius); padding: .3125rem .5rem; max-width: 100%; }
+        .dt-offer { margin: 0 0 .75rem; padding: .5rem .75rem; border-radius: var(--dt-radius); font-size: .875rem;
+                    background: color-mix(in srgb, var(--dt-accent) 12%, transparent); }
+        .dt-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; margin-top: .875rem; padding-top: .75rem;
+                   border-top: 1px solid var(--dt-line); font-size: .8125rem; color: var(--dt-muted); }
+        .dt-foot a { color: inherit; }
+        .dt-foot .dt-member a { color: var(--dt-text); font-weight: 600; }
+    </style>
+    {% include "classes/_public_timetable_styles.html" %}
+</head>
+<body>
+<div class="dt-frame">
+    <div class="dt-head">
+        <div class="dt-nav">
+            <a class="dt-arrow" href="{{ prev_url|default:'#' }}" {% if not prev_url %}aria-disabled="true" tabindex="-1"{% endif %} aria-label="Earlier dates">&lsaquo;</a>
+            <span class="dt-range">{{ start|date:"j M" }} to {{ end|date:"j M" }}</span>
+            <a class="dt-arrow" href="{{ next_url|default:'#' }}" {% if not next_url %}aria-disabled="true" tabindex="-1"{% endif %} aria-label="Later dates">&rsaquo;</a>
+        </div>
+        {% if classes|length > 1 %}
+        <label class="dt-sr" for="dt-class">Show</label>
+        <select class="dt-select" id="dt-class">
+            <option value="">All classes</option>
+            {% for cls in classes %}<option value="{{ cls.pk }}">{{ cls.name }}</option>{% endfor %}
+        </select>
+        {% endif %}
+    </div>
+
+    {% if offer and try_base %}
+    <p class="dt-offer"><strong>Intro offer:</strong> {{ offer.offer_text }}. Use code <strong>{{ offer.code }}</strong>.</p>
+    {% endif %}
+
+    {% include "classes/_public_timetable.html" %}
+
+    <div class="dt-foot">
+        {% if portal_url %}<span class="dt-member">Already a member? <a href="{{ portal_url }}" target="_blank" rel="noopener">Book in your member portal</a></span>{% else %}<span></span>{% endif %}
+        <a href="{{ dojo_url }}" target="_blank" rel="noopener">{{ org.name }} on Dojo</a>
+    </div>
+</div>
+<script>
+(function () {
+    // The class filter remembers nothing: each visit starts with every class.
+    var select = document.getElementById('dt-class');
+    function filter() {
+        var wanted = select ? select.value : '';
+        var anyShown = false;
+        document.querySelectorAll('.dt-day').forEach(function (day) {
+            var shown = 0;
+            day.querySelectorAll('.dt-row').forEach(function (row) {
+                var show = !wanted || row.getAttribute('data-class') === wanted;
+                row.hidden = !show;
+                if (show) shown++;
+            });
+            day.hidden = shown === 0;
+            if (shown) anyShown = true;
+        });
+        var empty = document.querySelector('.dt-filter-empty');
+        if (empty) empty.hidden = anyShown || !document.querySelector('.dt-day');
+        report();
+    }
+    var box = document.querySelector('.dt-frame');
+    function report() {
+        if (window.parent === window) return;
+        // Only a height: nothing about the visitor or the club leaves the frame. Measured from the
+        // timetable itself, as the page's own height is at least the frame's and would never shrink.
+        window.parent.postMessage({dojoEmbed: 'height', height: Math.ceil(box.getBoundingClientRect().bottom) + 2}, '*');
+    }
+    if (select) select.addEventListener('change', filter);
+    window.addEventListener('load', report);
+    if (window.ResizeObserver) new ResizeObserver(report).observe(box);
+    report();
+})();
+</script>
+</body>
+</html>

@@ -5,6 +5,7 @@ from django.shortcuts import redirect
 from django.urls import include, path, re_path
 from django.views.static import serve
 
+from classes import embed_views as classes_embed_views
 from mailer.password_reset import ClubPasswordResetForm
 from organisations import views as organisations_views
 
@@ -37,6 +38,8 @@ urlpatterns = [
     path('password-reset/<uidb64>/<token>/', auth_views.PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
     path('password-reset/complete/', auth_views.PasswordResetCompleteView.as_view(), name='password_reset_complete'),
     path('', root_redirect, name='root'),
+    path('embed.js', classes_embed_views.EmbedScriptView.as_view(), name='embed_script'),
+    path('embed/<slug:org_slug>/timetable/', classes_embed_views.EmbedTimetableView.as_view(), name='embed_timetable'),
     path('', include('network.urls')),   # Dojo network: /account/ and /clubs/
     path('org/<slug:org_slug>/', include('organisations.urls')),
     path('p/<str:token>/', include('members.portal_urls')),

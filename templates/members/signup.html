@@ -40,6 +40,14 @@
     <form method="post" id="signupForm">
         {% csrf_token %}
         <input type="hidden" name="signature_data" id="signatureData">
+        {% if source %}<input type="hidden" name="source" value="{{ source }}">{% endif %}
+        {% if trial_class %}
+        <input type="hidden" name="trial_class" value="{{ trial_class.pk }}">
+        <div class="alert alert-success d-flex gap-2 align-items-start mb-4">
+            <i class="bi bi-calendar2-check mt-1"></i>
+            <div>You'd like to try <strong>{{ trial_class.name }}</strong>{% if trial_class.schedule %} ({{ trial_class.schedule_display }}){% endif %}. Apply below and {{ org.name }} will be in touch about your first session.</div>
+        </div>
+        {% endif %}
 
         {% if account %}
         <div class="alert alert-info d-flex gap-2 align-items-start mb-4">
