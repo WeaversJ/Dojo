@@ -347,3 +347,84 @@ class BoundaryTests(TimetableTestBase):
         self.client.post(url, {**data, 'public_timetable': '1'})
         self.org.refresh_from_db()
         self.assertEqual(self.org.embed_domains, ['https://evil.example'])
+
+
+class WeeklySummaryTests(TestCase):
+    def test_days_with_the_same_times_are_grouped(self):
+        summary = timetable.weekly_summary({
+            0: [('17:30', '18:30'), ('19:00', '20:30')], 2: [('19:00', '20:30')], 3: [('17:30', '18:30'), ('19:00', '20:30')],
+        })
+        self.assertEqual(summary, 'Mon & Thu 17:30–18:30, 19:00–20:30 · Wed 19:00–20:30')
+
+    def test_runs_of_days_and_long_lists(self):
+        weekdays = {d: [('18:00', '19:00')] for d in range(5)}
+        self.assertEqual(timetable.weekly_summary({**weekdays, 5: [('10:00', '11:00')]}),
+                         'Mon–Fri 18:00–19:00 · Sat 10:00–11:00')
+        busy = {1: [('09:00', ''), ('10:00', '11:00'), ('12:00', '13:00'), ('18:00', '19:00')]}
+        self.assertEqual(timetable.weekly_summary(busy), 'Tue 09:00, 10:00–11:00, +2 more')
+        self.assertEqual(timetable.weekly_summary({6: [('', '')]}), 'Sun')
+        self.assertEqual(timetable.weekly_summary({}), '')
+
+    def test_slots_come_from_active_classes_only_and_skip_bad_entries(self):
+        org = Organisation.objects.create(name='Club', slug='club', features=dict(ALL_ON))
+        Class.objects.create(organisation=org, name='On', is_active=True, schedule=[
+            {'day': 3, 'time': '19:00', 'end': '20:00'}, {'day': 3, 'time': '17:00', 'end': '18:00'},
+            {'day': 9, 'time': '10:00'}, {'day': 'Mon'}, 'junk'])
+        Class.objects.create(organisation=org, name='Off', is_active=False, schedule=[{'day': 0, 'time': '10:00'}])
+        self.assertEqual(timetable.weekly_slots([org.pk]), {org.pk: {3: [('17:00', '18:00'), ('19:00', '20:00')]}})
+
+
+class FinderDayTests(TimetableTestBase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.juniors.schedule = [{'day': 0, 'time': '17:30', 'end': '18:30'}, {'day': 3, 'time': '17:30', 'end': '18:30'}]
+        cls.juniors.save()
+        place = {'address_line1': '2 Road', 'city': 'Cardiff', 'postcode': 'CF10 2BB',
+                 'latitude': Decimal('51.49'), 'longitude': Decimal('-3.17'), 'disciplines': ['judo']}
+        cls.weekend = Organisation.objects.create(name='Weekend Karate', slug='weekend', features=dict(ALL_ON),
+                                                  settings={'public_timetable': True}, **place)
+        Class.objects.create(organisation=cls.weekend, name='Saturday', is_active=True,
+                             schedule=[{'day': 5, 'time': '10:00', 'end': '11:30'}])
+        cls.quiet = Organisation.objects.create(name='Quiet Club', slug='quiet', features=dict(ALL_ON), **place)
+        Class.objects.create(organisation=cls.quiet, name='Monday', is_active=True,
+                             schedule=[{'day': 0, 'time': '19:00', 'end': '20:00'}])
+
+    def search(self, **params):
+        data = self.client.get(reverse('network_search'), params).json()
+        return {club['slug']: club for club in data['clubs']}
+
+    def test_each_club_shows_its_usual_week_if_its_timetable_is_public(self):
+        clubs = self.search()
+        self.assertEqual(clubs['riverside']['classes'], 'Mon & Thu 17:30–18:30')
+        self.assertEqual(clubs['riverside']['days'], [0, 3])
+        self.assertEqual(clubs['weekend']['classes'], 'Sat 10:00–11:30')
+        self.assertEqual((clubs['quiet']['classes'], clubs['quiet']['days']), ('', []))   # not public: nothing shown
+
+    def test_filtering_by_day(self):
+        self.assertEqual(set(self.search(days='0')), {'riverside'})
+        self.assertEqual(set(self.search(days='5')), {'weekend'})
+        self.assertEqual(set(self.search(days='0,5')), {'riverside', 'weekend'})
+        self.assertEqual(set(self.search(days='2')), set())
+        self.assertEqual(set(self.search()), {'riverside', 'weekend', 'quiet'})
+        self.assertEqual(set(self.search(days='9,x,')), {'riverside', 'weekend', 'quiet'})   # nonsense is ignored
+
+    def test_works_with_distance_and_discipline(self):
+        clubs = self.search(days='0', lat='51.48', lng='-3.18', radius='5', discipline='judo')
+        self.assertEqual(set(clubs), {'riverside'})
+        self.assertIsNotNone(clubs['riverside']['miles'])
+
+    def test_the_day_filter_shows_once_a_club_publishes_its_timetable(self):
+        self.assertContains(self.client.get(reverse('network_finder')), 'id="n-days"')
+        Organisation.objects.update(settings={})
+        self.assertNotContains(self.client.get(reverse('network_finder')), 'id="n-days"')
+
+
+class ClubPageOrderTests(TimetableTestBase):
+    def test_timetable_sits_between_about_and_apply_to_join(self):
+        self.org.about = 'We are a friendly club.'
+        self.org.save()
+        page = self.client.get(reverse('network_club', kwargs={'slug': self.org.slug})).content.decode()
+        about, table, apply = page.index('id="about"'), page.index('id="timetable"'), page.index('Apply to join')
+        self.assertLess(about, table)
+        self.assertLess(table, apply)

@@ -312,6 +312,8 @@ class FinderView(View):
             'radius_choices': finder.RADIUS_CHOICES,
             'sort_choices': finder.SORT_CHOICES, 'default_sort': finder.DEFAULT_SORT,
             'default_radius': finder.DEFAULT_RADIUS,
+            # The day filter only makes sense once some club shows when it trains.
+            'day_choices': list(enumerate(finder.DAY_CHOICES)) if finder.publishing_timetables() else [],
             'maps_key': maps_key(), 'maps_map_id': maps_map_id(),
             'account': accounts.account_for(request.user) if request.user.is_authenticated else None,
         })
@@ -328,7 +330,9 @@ class SearchView(View):
         clubs = []
         sort = finder.parse_sort(request.GET)
         from billing.promos import offers_by_club
-        found = finder.search(lat, lng, radius, finder.parse_discipline(request.GET), sort)
+        from classes.timetable import weekly_summary
+        days = finder.parse_days(request.GET)
+        found = finder.search(lat, lng, radius, finder.parse_discipline(request.GET), sort, days)
         offers = offers_by_club([club.pk for club, _ in found])
         for club, miles in found:
             clubs.append({
@@ -343,8 +347,10 @@ class SearchView(View):
                 'status': status.get(club.pk, ''),
                 'rating': club.rating, 'reviews': club.review_count,
                 'offer': offers[club.pk].offer_text() if club.pk in offers else '',
+                'classes': weekly_summary(club.weekly),        # '' unless the club shows its timetable
+                'days': sorted(club.weekly),
             })
-        return JsonResponse({'clubs': clubs, 'radius': radius, 'searched': lat is not None, 'sort': sort})
+        return JsonResponse({'clubs': clubs, 'radius': radius, 'searched': lat is not None, 'sort': sort, 'days': days})
 
 
 def _club_or_404(slug, account):

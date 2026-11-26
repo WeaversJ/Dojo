@@ -8,6 +8,7 @@
     </div>
     <div class="form-text mt-0">
         The next few weeks of your classes, with cancellations, on your Dojo club page and in the website widget below.
+        Find clubs also shows the days and times you usually train, and people can search by day.
         It shows classes that are switched on for booking (Classes → edit → Active){% if public_classes %}: {% for cls in public_classes %}{{ cls.name }}{% if not forloop.last %}, {% endif %}{% endfor %}{% else %}, and none are yet{% endif %}.
         No member details are shown.
     </div>

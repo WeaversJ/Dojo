@@ -39,6 +39,9 @@
 .n-heart:active { transform: scale(.85); transition-duration: 0s; }
 .n-heart[aria-pressed="true"] { color: #ff2d55; }
 .n-status { font-size: .75rem; font-weight: 600; color: var(--p-green); }
+.n-club-times { color: var(--p-label); font-size: .875rem; margin-top: .125rem; }
+.n-club-times .bi { color: var(--p-label-2); }
+.n-chips-label { font-size: .8125rem; font-weight: 600; color: var(--p-label-2); align-self: center; margin-right: .25rem; }
 </style>
 {% endblock %}
 {% block content %}
@@ -63,6 +66,13 @@
             {% for key, label in discipline_choices %}<button type="button" class="n-chip" data-discipline="{{ key }}" aria-pressed="false">{{ label }}</button>{% endfor %}
         </div>
         {% endif %}
+        {% if day_choices %}
+        <div class="n-chips mt-2" id="n-days" role="group" aria-label="Days with classes">
+            <span class="n-chips-label">Trains on</span>
+            <button type="button" class="n-chip" data-day="" aria-pressed="true">Any day</button>
+            {% for number, name in day_choices %}<button type="button" class="n-chip" data-day="{{ number }}" aria-pressed="false">{{ name }}</button>{% endfor %}
+        </div>
+        {% endif %}
         <p class="p-caption mb-0 mt-2" id="n-where-status" aria-live="polite">{% if maps_key %}Search by postcode or town, or use your location.{% else %}Use your location to see clubs nearest you.{% endif %}</p>
     </div>
 </div>
@@ -84,7 +94,8 @@
     var csrf = '{{ csrf_token }}';
     var key = JSON.parse(document.getElementById('n-maps-key').textContent);
     var state = {lat: null, lng: null, label: '', radius: document.getElementById('n-radius').value, discipline: '',
-                 sort: document.getElementById('n-sort').value};
+                 sort: document.getElementById('n-sort').value, days: []};
+    var DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     var list = document.getElementById('n-list'), count = document.getElementById('n-count');
     var status = document.getElementById('n-where-status');
     var map = null, markers = {}, here = null, info = null, geocoder = null, lastClubs = [];
@@ -109,6 +120,7 @@
 
     function search() {
         var q = new URLSearchParams({radius: state.radius, discipline: state.discipline, sort: state.sort});
+        if (state.days.length) q.set('days', state.days.join(','));
         if (state.lat !== null) { q.set('lat', state.lat); q.set('lng', state.lng); }
         list.setAttribute('aria-busy', 'true');
         fetch('{% url "network_search" %}?' + q.toString(), {headers: {'Accept': 'application/json'}})
@@ -126,9 +138,14 @@
         if (!clubs.length) {
             var empty = el('div', 'p-empty');
             empty.appendChild(el('i', 'bi bi-geo text-muted'));
-            empty.appendChild(el('p', 'p-row-sub mb-0', data.searched
-                ? 'No clubs within ' + data.radius + ' miles' + (state.discipline ? ' teach that yet' : '') + '. Try a wider distance.'
-                : 'No clubs match that yet.'));
+            var dayText = state.days.length
+                ? ' with classes on ' + state.days.map(function (d) { return DAY_NAMES[d]; }).join(' or ') : '';
+            var message;
+            if (data.searched && state.days.length) message = 'No clubs within ' + data.radius + ' miles' + dayText + (state.discipline ? ' teach that' : '') + ' yet. Try a wider distance or other days.';
+            else if (data.searched) message = 'No clubs within ' + data.radius + ' miles' + (state.discipline ? ' teach that yet' : '') + '. Try a wider distance.';
+            else message = 'No clubs' + dayText + ' match that yet.';
+            empty.appendChild(el('p', 'p-row-sub mb-0', message));
+            if (state.days.length) empty.appendChild(el('p', 'p-caption mb-0 mt-1', 'Only clubs that show their timetable on Dojo can be found by day.'));
             list.appendChild(empty);
         }
         clubs.forEach(function (club) {
@@ -145,6 +162,14 @@
                 offer.appendChild(gift);
                 offer.appendChild(document.createTextNode('Intro offer: ' + club.offer));
                 main.appendChild(offer);
+            }
+            if (club.classes) {
+                var times = el('div', 'n-club-times');
+                var cal = el('i', 'bi bi-calendar3 me-1'); cal.setAttribute('aria-hidden', 'true');
+                times.appendChild(cal);
+                times.appendChild(document.createTextNode(club.classes));
+                times.setAttribute('title', 'Usual weekly classes');
+                main.appendChild(times);
             }
             if (club.status) main.appendChild(el('div', 'n-status', club.status === 'member' ? 'You’re a member' : 'Application sent'));
             main.appendChild(el('div', 'n-club-meta', club.address));
@@ -266,6 +291,25 @@
         chip.addEventListener('click', function () {
             document.querySelectorAll('#n-disciplines .n-chip').forEach(function (c) { c.setAttribute('aria-pressed', c === chip ? 'true' : 'false'); });
             state.discipline = chip.dataset.discipline;
+            search();
+        });
+    });
+
+    // Days: pick any number; a club matches if it has classes on at least one of them. "Any day" clears them.
+    document.querySelectorAll('#n-days .n-chip').forEach(function (chip) {
+        chip.addEventListener('click', function () {
+            var chips = document.querySelectorAll('#n-days .n-chip');
+            if (chip.dataset.day === '') {
+                state.days = [];
+            } else {
+                var day = Number(chip.dataset.day), at = state.days.indexOf(day);
+                if (at === -1) state.days.push(day); else state.days.splice(at, 1);
+                state.days.sort();
+            }
+            chips.forEach(function (c) {
+                var on = c.dataset.day === '' ? !state.days.length : state.days.indexOf(Number(c.dataset.day)) !== -1;
+                c.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
             search();
         });
     });

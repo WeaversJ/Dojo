@@ -179,3 +179,57 @@ def parse_date(text):
         return datetime.strptime(text or '', '%Y-%m-%d').date()
     except ValueError:
         return None
+
+
+# The weekly pattern, for the club finder: which days a club trains and at what times, from its
+# public classes' schedules (cancellations and one-off extras don't change the usual week).
+DAY_NAMES = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+MAX_SLOTS_SHOWN = 3
+
+
+def weekly_slots(org_ids):
+    """{org id: {weekday: [(start, end), ...]}} for the clubs' public classes, each day's slots in time order.
+    A schedule entry with no time still counts for its day, as ('', '')."""
+    found = {}
+    rows = Class.objects.filter(organisation_id__in=list(org_ids), is_active=True).values_list('organisation_id', 'schedule')
+    for org_id, schedule in rows:
+        for entry in schedule or []:
+            day = entry.get('day') if isinstance(entry, dict) else None
+            if not isinstance(day, int) or not 0 <= day <= 6:
+                continue
+            slot = (str(entry.get('time') or ''), str(entry.get('end') or ''))
+            found.setdefault(org_id, {}).setdefault(day, set()).add(slot)
+    return {org_id: {day: sorted(slots, key=lambda s: (s[0] == '', s)) for day, slots in sorted(days.items())}
+            for org_id, days in found.items()}
+
+
+def _day_names(days):
+    """'Mon', 'Mon & Thu', 'Mon, Wed & Fri', or 'Mon–Fri' for three or more days in a row."""
+    days = sorted(days)
+    if len(days) >= 3 and days == list(range(days[0], days[-1] + 1)):
+        return f'{DAY_NAMES[days[0]]}–{DAY_NAMES[days[-1]]}'
+    names = [DAY_NAMES[d] for d in days]
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} & {names[-1]}"
+
+
+def _slot_text(slot):
+    start, end = slot
+    return f'{start}–{end}' if start and end else start
+
+
+def weekly_summary(days):
+    """
+    A one-line summary of weekly_slots() for one club, e.g.
+    'Mon & Thu 17:30–18:30, 19:00–20:30 · Wed 19:00–20:30'. Days with the same times are grouped.
+    '' if the club has no classes on its public timetable.
+    """
+    groups = {}
+    for day, slots in sorted(days.items()):
+        groups.setdefault(tuple(slots), []).append(day)
+    parts = []
+    for slots, group_days in sorted(groups.items(), key=lambda item: item[1][0]):
+        times = [_slot_text(s) for s in slots if s[0]]
+        if len(times) > MAX_SLOTS_SHOWN:
+            times = times[:MAX_SLOTS_SHOWN - 1] + [f'+{len(times) - MAX_SLOTS_SHOWN + 1} more']
+        parts.append(' '.join([_day_names(group_days), ', '.join(times)]).strip())
+    return ' · '.join(parts)
