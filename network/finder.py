@@ -9,6 +9,7 @@ RADIUS_CHOICES = (5, 10, 25, 50, 100)
 SORT_CHOICES = (('rating', 'Rating'), ('distance', 'Distance'), ('az', 'A–Z'), ('za', 'Z–A'))
 DEFAULT_SORT = 'rating'
 DEFAULT_RADIUS = 25
+DAY_CHOICES = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 MAX_RESULTS = 200
 
 
@@ -25,7 +26,12 @@ def offered_disciplines():
     return [(key, label) for key, label in discipline_list.DISCIPLINES if key in taught]
 
 
-def search(lat=None, lng=None, radius=DEFAULT_RADIUS, discipline='', sort=DEFAULT_SORT):
+def publishing_timetables():
+    """Whether any listed club shows its timetable publicly, so the finder can offer the day filter."""
+    return any(club.public_timetable for club in listed_clubs().only('settings'))
+
+
+def search(lat=None, lng=None, radius=DEFAULT_RADIUS, discipline='', sort=DEFAULT_SORT, days=()):
     """
     Listed clubs, as (club, miles away) pairs. With a point, only clubs within `radius` miles of it;
     without one, every listed club, with no distance. `discipline` (a key from
@@ -36,6 +42,11 @@ def search(lat=None, lng=None, radius=DEFAULT_RADIUS, discipline='', sort=DEFAUL
     that have no reviews yet after the rated ones. By distance: nearest first (by rating without a
     point, as there's no distance). Or by name, A–Z or Z–A. Each club gets `rating` (average, or
     None) and `review_count`.
+
+    Each club also gets `weekly`, its usual week ({weekday: [(start, end), ...]}, see
+    classes.timetable.weekly_slots), if it shows its timetable publicly, and {} otherwise. `days`
+    (weekday numbers, Monday 0) keeps only clubs with classes on at least one of them, which means
+    only clubs that show their timetable: Dojo can't say when the others train.
     """
     from . import reviews
     clubs = listed_clubs()
@@ -53,6 +64,12 @@ def search(lat=None, lng=None, radius=DEFAULT_RADIUS, discipline='', sort=DEFAUL
         if miles is not None and miles > radius:
             continue
         results.append((club, miles))
+    from classes.timetable import weekly_slots
+    weekly = weekly_slots([club.pk for club, _ in results if club.public_timetable])
+    for club, _ in results:
+        club.weekly = weekly.get(club.pk, {}) if club.public_timetable else {}
+    if days:
+        results = [(club, miles) for club, miles in results if set(club.weekly) & set(days)]
     found = reviews.ratings([club.pk for club, _ in results])
     for club, _ in results:
         club.rating, club.review_count = found.get(club.pk, (None, 0))
@@ -93,3 +110,12 @@ def parse_sort(get):
 def parse_discipline(get):
     key = get.get('discipline', '')
     return key if key in discipline_list.LABELS else ''
+
+
+def parse_days(get):
+    """Weekday numbers (Monday 0) from 'days=0,3', ignoring anything else."""
+    days = set()
+    for part in get.get('days', '').split(','):
+        if part.strip().isdigit() and 0 <= int(part) <= 6:
+            days.add(int(part))
+    return sorted(days)

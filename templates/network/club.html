@@ -5,7 +5,11 @@
 {% block bar_title %}{{ org.name }}{% endblock %}
 {% block page_subtitle %}<p class="p-subtitle">{{ org.discipline_labels|join:" · " }}{% if review_summary.count %} · <a href="#reviews" class="text-reset"><i class="bi bi-star-fill text-warning"></i> {{ review_summary.average }} ({{ review_summary.count }} review{{ review_summary.count|pluralize }})</a>{% endif %}</p>{% endblock %}
 {% block content %}
+{% if org.public_timetable %}{% include "classes/_public_timetable_styles.html" %}{% endif %}
 <style>
+.n-timetable { --dt-accent: var(--p-accent); --dt-on-accent: var(--p-on-accent); --dt-text: var(--p-label);
+               --dt-muted: var(--p-label-2); --dt-line: var(--p-separator); --dt-radius: var(--p-radius-sm); }
+.n-timetable .dt-day:first-child .dt-date { margin-top: 0; }
 .n-stars .bi { color: #f5a623; }
 .n-about { display: flex; gap: 1.25rem 1.5rem; align-items: flex-start; }
 .n-about-logo { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
@@ -41,6 +45,14 @@
                 {% if org.about %}<div class="n-about-text">{{ org.about|linebreaks }}</div>{% endif %}
             </div>
         </div>
+    </section>
+    {% endif %}
+    {% if org.public_timetable %}
+    <section class="mt-4" id="timetable" aria-labelledby="timetable-title">
+        <div class="p-section"><h2 class="p-section-title" id="timetable-title">Timetable</h2></div>
+        <div class="card"><div class="card-body n-timetable">
+            {% include "classes/_public_timetable.html" with days=timetable_days %}
+        </div></div>
     </section>
     {% endif %}
         {% for offer in intro_offers %}

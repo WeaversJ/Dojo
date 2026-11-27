@@ -1,0 +1,32 @@
+{% comment %}
+The public timetable (classes/timetable.py), shared by the website widget and the club's finder page.
+Needs: days; try_base (the start of a "Try a class" link, or ''). The page sets the --dt-* colours.
+{% endcomment %}
+<div class="dt">
+    {% for day in days %}
+    <section class="dt-day" aria-label="{{ day.date|date:'l j F' }}">
+        <h3 class="dt-date">{{ day.date|date:"l j F" }}</h3>
+        <ul class="dt-list">
+            {% for e in day.entries %}
+            <li class="dt-row{% if e.cancelled %} is-cancelled{% endif %}" data-class="{{ e.cls.pk }}">
+                <span class="dt-time">{% if e.time %}{{ e.time_text }}{% else %}Time to be confirmed{% endif %}</span>
+                <span class="dt-main">
+                    <span class="dt-name">{{ e.cls.name }}{% if e.extra and not e.cancelled %} <span class="dt-tag">Extra session</span>{% endif %}</span>
+                    {% if e.cancelled %}
+                    <span class="dt-sub dt-cancelled">Cancelled</span>
+                    {% elif e.who or e.places_left is not None %}
+                    <span class="dt-sub">{{ e.who }}{% if e.who and e.places_left is not None %} · {% endif %}{% if e.places_left is not None %}{% if e.full %}<span class="dt-full">Full</span>{% else %}{{ e.places_left }} place{{ e.places_left|pluralize }} left{% endif %}{% endif %}</span>
+                    {% endif %}
+                </span>
+                {% if try_base and not e.cancelled and not e.full %}
+                <a class="dt-btn" href="{{ try_base }}class={{ e.cls.pk }}" target="_blank" rel="noopener">Try a class<span class="dt-sr">: {{ e.cls.name }}, {{ day.date|date:"l j F" }} (opens in a new tab)</span></a>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+    {% empty %}
+    <p class="dt-empty">No classes in these dates.</p>
+    {% endfor %}
+    <p class="dt-empty dt-filter-empty" hidden>No sessions of that class in these dates.</p>
+</div>

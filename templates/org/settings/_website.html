@@ -1,0 +1,87 @@
+<form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="website">
+
+    <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" role="switch" name="public_timetable" value="1" id="public-timetable" {% if org.public_timetable %}checked{% endif %}>
+        <label class="form-check-label small fw-semibold" for="public-timetable">Show your timetable publicly</label>
+    </div>
+    <div class="form-text mt-0">
+        The next few weeks of your classes, with cancellations, on your Dojo club page and in the website widget below.
+        Find clubs also shows the days and times you usually train, and people can search by day.
+        It shows classes that are switched on for booking (Classes → edit → Active){% if public_classes %}: {% for cls in public_classes %}{{ cls.name }}{% if not forloop.last %}, {% endif %}{% endfor %}{% else %}, and none are yet{% endif %}.
+        No member details are shown.
+    </div>
+
+    <div class="form-check form-switch mt-3">
+        <input class="form-check-input" type="checkbox" role="switch" name="timetable_places" value="1" id="timetable-places" {% if org.timetable_shows_places %}checked{% endif %}>
+        <label class="form-check-label small" for="timetable-places">Show how many places are left</label>
+    </div>
+    <div class="form-text mt-0">For classes with a maximum size{% if 'waiting_lists' not in org.enabled_features %} (switch on Class capacity &amp; waiting lists under Features first){% endif %}.</div>
+
+    <label class="form-label small fw-semibold mt-3" for="embed-domains">Your websites</label>
+    <textarea name="embed_domains" id="embed-domains" class="form-control form-control-sm font-monospace" rows="3"
+              placeholder="https://www.yourclub.co.uk">{{ embed_domains_text }}</textarea>
+    <div class="form-text">
+        One per line. Only these websites can show your timetable widget, so other sites can't put it on theirs.
+        If your site works with and without www, add both. For a Wix or Squarespace site still on its free address,
+        add that address, for example https://yourname.wixsite.com.
+    </div>
+
+    <button type="submit" class="btn btn-dark btn-sm mt-3">Save</button>
+</form>
+
+<hr class="my-4">
+<h6 class="mb-1">Add the widget to your website</h6>
+<p class="form-text mt-0">
+    Paste this where the timetable should appear: in Wix, an Embed HTML element; in WordPress, a Custom HTML block;
+    in Squarespace, a Code block. It sizes itself to fit, and uses your colours from Appearance.
+</p>
+<div class="input-group input-group-sm">
+    <input type="text" class="form-control font-monospace" id="embed-snippet" readonly
+           value='<script src="{{ embed_script_url }}" data-club="{{ org.slug }}" async></script>'>
+    <button type="button" class="btn btn-outline-secondary" id="embed-copy"><i class="bi bi-clipboard me-1"></i>Copy</button>
+</div>
+<div class="form-text">
+    Options to add to the tag: <code>data-weeks="2"</code> to show two weeks at once (up to 4),
+    <code>data-theme="dark"</code> for a dark website,
+    {% if public_classes %}<code>data-class="{{ public_classes.0.pk }}"</code> to show one class only ({% for cls in public_classes %}{{ cls.name }} is {{ cls.pk }}{% if not forloop.last %}, {% endif %}{% endfor %}).{% else %}and <code>data-class</code> to show one class only.{% endif %}
+</div>
+<p class="form-text">
+    “Try a class” opens your join form in a new tab, with the class{% if 'billing' in org.enabled_features %} and your intro offer{% endif %} filled in.
+    {% if 'member_portal' in org.enabled_features %}Members get a link to book in their member portal.{% endif %}
+    {% if 'applications' not in org.enabled_features %}<strong>Switch on Online applications under Features for the “Try a class” buttons to show.</strong>{% endif %}
+</p>
+<p class="small mb-2">
+    Applications in the last 30 days: <strong>{{ website_applications }}</strong> from your website timetable,
+    <strong>{{ finder_applications }}</strong> from your Dojo club page.
+</p>
+
+{% if org.public_timetable %}
+<div class="d-flex justify-content-between align-items-center mt-3 mb-2">
+    <span class="small fw-semibold">Preview</span>
+    <a href="{{ embed_preview_url }}" target="_blank" rel="noopener" class="small">Open in a new tab <i class="bi bi-box-arrow-up-right"></i></a>
+</div>
+<iframe src="{{ embed_preview_url }}" title="Timetable widget preview" id="embed-preview"
+        style="display:block;width:100%;height:520px;border:0;background:transparent;"></iframe>
+{% else %}
+<p class="text-muted small mt-3"><i class="bi bi-eye-slash me-1"></i>Switch on “Show your timetable publicly” and save to see a preview.</p>
+{% endif %}
+
+<script>
+(function () {
+    var copy = document.getElementById('embed-copy');
+    var field = document.getElementById('embed-snippet');
+    if (copy && field) copy.addEventListener('click', function () {
+        field.select();
+        var done = function () { copy.innerHTML = '<i class="bi bi-check2 me-1"></i>Copied'; };
+        if (navigator.clipboard) navigator.clipboard.writeText(field.value).then(done, function () { document.execCommand('copy'); done(); });
+        else { document.execCommand('copy'); done(); }
+    });
+    var frame = document.getElementById('embed-preview');
+    if (frame) window.addEventListener('message', function (event) {
+        if (event.source !== frame.contentWindow || !event.data || event.data.dojoEmbed !== 'height') return;
+        if (typeof event.data.height === 'number') frame.style.height = Math.max(120, Math.min(Math.ceil(event.data.height), 4000)) + 'px';
+    });
+})();
+</script>

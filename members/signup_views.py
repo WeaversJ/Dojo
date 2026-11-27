@@ -28,7 +28,18 @@ class SignupView(View):
             'account_holder': _account_holder(account), 'agreed': agreed, 'pronoun_suggestions': PRONOUN_SUGGESTIONS,
             'custom_fields': build_custom_field_widgets(org, initial_values=answers, fields=fields),
             **self._promo_context(request, org, data),
+            **self._trial_context(request, org, data),
         })
+
+    def _trial_context(self, request, org, data):
+        """The class picked with "Try a class" on the public timetable, and where they came from, kept
+        through the form (in hidden fields) so the application records both."""
+        from .models import MemberApplication
+        from .signup import trial_class
+        source = (data or {}).get('source') or request.GET.get('source', '')
+        chosen = trial_class(org, (data or {}).get('trial_class') or request.GET.get('class'))
+        return {'trial_class': chosen,
+                'source': source if source in MemberApplication.Source.values else ''}
 
     def _promo_context(self, request, org, data):
         """The club's intro offers, and whether to ask for a promo code (with one from an offer link filled in)."""

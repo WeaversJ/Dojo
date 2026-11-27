@@ -251,6 +251,25 @@ class Organisation(models.Model):
             return self.DEFAULT_BOOKING_CUTOFF_HOURS
         return value
 
+    # The public timetable (classes/timetable.py): on the club's Dojo finder page and in the widget a
+    # club embeds on its own website (Settings → Website). Off until the club switches it on.
+    MAX_EMBED_DOMAINS = 10
+
+    @property
+    def public_timetable(self):
+        return (self.settings or {}).get('public_timetable') is True
+
+    @property
+    def timetable_shows_places(self):
+        """Whether the public timetable says how many places are left (classes with a capacity only)."""
+        return (self.settings or {}).get('timetable_places') is True
+
+    @property
+    def embed_domains(self):
+        """Website addresses allowed to show the timetable widget, e.g. ['https://www.cardiffjudo.co.uk']."""
+        value = (self.settings or {}).get('embed_domains') or []
+        return [d for d in value if isinstance(d, str)][:self.MAX_EMBED_DOMAINS]
+
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = slugify(self.name)

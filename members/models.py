@@ -205,6 +205,17 @@ class MemberApplication(NameParts, models.Model):
     # A promo code entered on the join form (billing/promos.py), given to the member on approval.
     promo = models.ForeignKey('billing.PolicyDiscount', on_delete=models.SET_NULL, null=True, blank=True,
                               related_name='applications')
+
+    # Where the applicant came from, when Dojo can tell: the public timetable on the club's own
+    # website (the embed widget) or on its Dojo club page. Blank for the plain join link.
+    class Source(models.TextChoices):
+        WIDGET = 'widget', 'Your website timetable'
+        FINDER = 'finder', 'Your Dojo club page'
+
+    source = models.CharField(max_length=20, choices=Source.choices, blank=True)
+    # The class they chose "Try a class" on, so the club knows where to put them.
+    trial_class = models.ForeignKey('classes.Class', on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='trial_applications')
     # Answers to the club's custom fields asked on the join form, {field pk: value}, as on Member.
     custom_field_values = models.JSONField(default=dict, blank=True)
     signature_data = models.TextField(blank=True, help_text='Base64-encoded PNG of drawn signature')

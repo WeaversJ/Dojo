@@ -723,7 +723,7 @@ class ApplicationListView(OrgAdminMixin, View):
     def get(self, request, org_slug):
         from django.shortcuts import render
         from .models import MemberApplication
-        applications = MemberApplication.objects.filter(organisation=self.org)
+        applications = MemberApplication.objects.filter(organisation=self.org).select_related('promo', 'trial_class')
         status = request.GET.get('status', 'pending')
         if status in ('pending', 'approved', 'rejected'):
             applications = applications.filter(status=status)

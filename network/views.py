@@ -5,7 +5,8 @@ from django.contrib.auth import views as auth_views
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme, urlencode
 from django.views import View
 
 from organisations import disciplines
@@ -32,7 +33,7 @@ class AccountRequiredMixin:
 
     def dispatch(self, request, *args, **kwargs):
         if not request.user.is_authenticated:
-            return redirect(f"{reverse('network_login')}?next={request.get_full_path()}")
+            return redirect(f"{reverse('network_login')}?{urlencode({'next': request.get_full_path()})}")
         self.account = accounts.account_for(request.user)
         return super().dispatch(request, *args, **kwargs)
 
@@ -311,6 +312,8 @@ class FinderView(View):
             'radius_choices': finder.RADIUS_CHOICES,
             'sort_choices': finder.SORT_CHOICES, 'default_sort': finder.DEFAULT_SORT,
             'default_radius': finder.DEFAULT_RADIUS,
+            # The day filter only makes sense once some club shows when it trains.
+            'day_choices': list(enumerate(finder.DAY_CHOICES)) if finder.publishing_timetables() else [],
             'maps_key': maps_key(), 'maps_map_id': maps_map_id(),
             'account': accounts.account_for(request.user) if request.user.is_authenticated else None,
         })
@@ -327,7 +330,9 @@ class SearchView(View):
         clubs = []
         sort = finder.parse_sort(request.GET)
         from billing.promos import offers_by_club
-        found = finder.search(lat, lng, radius, finder.parse_discipline(request.GET), sort)
+        from classes.timetable import weekly_summary
+        days = finder.parse_days(request.GET)
+        found = finder.search(lat, lng, radius, finder.parse_discipline(request.GET), sort, days)
         offers = offers_by_club([club.pk for club, _ in found])
         for club, miles in found:
             clubs.append({
@@ -342,8 +347,10 @@ class SearchView(View):
                 'status': status.get(club.pk, ''),
                 'rating': club.rating, 'reviews': club.review_count,
                 'offer': offers[club.pk].offer_text() if club.pk in offers else '',
+                'classes': weekly_summary(club.weekly),        # '' unless the club shows its timetable
+                'days': sorted(club.weekly),
             })
-        return JsonResponse({'clubs': clubs, 'radius': radius, 'searched': lat is not None, 'sort': sort})
+        return JsonResponse({'clubs': clubs, 'radius': radius, 'searched': lat is not None, 'sort': sort, 'days': days})
 
 
 def _club_or_404(slug, account):
@@ -368,6 +375,13 @@ class ClubView(View):
         from billing import promos
         from members.signup import active_waivers
         club_reviews = list(org.reviews.select_related('account')[:50])
+        timetable_days, try_base = [], ''
+        if org.public_timetable:
+            from classes import timetable
+            from classes.embed_views import try_link_base
+            timetable_days = timetable.build(org, timezone.localdate(), weeks=2)
+            if status.get(org.pk, '') == '':
+                try_base = try_link_base(org, reverse('network_join', kwargs={'slug': org.slug}), 'finder')
         return render(request, 'network/club.html', {
             'active': 'finder',
             'org': org, 'account': account, 'maps_key': maps_key(), 'maps_map_id': maps_map_id(),
@@ -378,6 +392,7 @@ class ClubView(View):
             'review_summary': reviews.summary(org), 'reviews': club_reviews,
             'my_review': org.reviews.filter(account=account).first() if account else None,
             'can_review': reviews.can_review(account, org),
+            'timetable_days': timetable_days, 'try_base': try_base,
         })
 
 
@@ -473,4 +488,9 @@ class JoinClubView(AccountRequiredMixin, View):
             return redirect('network_club', slug=org.slug)
         url = reverse('member_signup', kwargs={'org_slug': org.slug})
         code = request.GET.get('code', '')
-        return redirect(f'{url}?code={code}' if code.isalnum() else url)
+        # Keep what the club page's timetable passed on: the class picked with "Try a class", and that
+        # the visitor came from the club page.
+        params = {key: request.GET[key] for key in ('class', 'source') if request.GET.get(key, '').isalnum()}
+        if code.isalnum():
+            params['code'] = code
+        return redirect(f'{url}?{urlencode(params)}' if params else url)

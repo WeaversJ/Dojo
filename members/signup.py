@@ -104,6 +104,16 @@ def origin_allowed(origin, org_slug):
     return False
 
 
+def trial_class(org, class_id):
+    """The class someone chose "Try a class" on (from the public timetable), if it's one of the club's
+    classes on that timetable; None otherwise."""
+    from classes.models import Class
+    try:
+        return Class.objects.filter(organisation=org, is_active=True, pk=int(class_id)).first()
+    except (TypeError, ValueError):
+        return None
+
+
 def create_application(org, data, require_agreement=False):
     """
     Validate submitted fields and create a MemberApplication.
@@ -188,6 +198,8 @@ def create_application(org, data, require_agreement=False):
 
     application = MemberApplication.objects.create(
         organisation=org,
+        trial_class=trial_class(org, value('trial_class')),
+        source=value('source') if value('source') in MemberApplication.Source.values else '',
         name=name,
         date_of_birth=dob,
         signature_data=signature_data if agreed else '',

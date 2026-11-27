@@ -1,0 +1,29 @@
+{% comment %}Styles for _public_timetable.html. The including page sets --dt-accent, --dt-on-accent,
+--dt-text, --dt-muted, --dt-line, --dt-surface and --dt-radius.{% endcomment %}
+<style>
+.dt [hidden], .dt[hidden] { display: none !important; }
+.dt .dt-day + .dt-day { margin-top: 1rem; }
+.dt .dt-date { font-size: .8125rem; font-weight: 600; color: var(--dt-muted); margin: 0 0 .25rem; letter-spacing: .01em; }
+.dt ul.dt-list { list-style: none; margin: 0; padding: 0; }
+.dt .dt-row { display: grid; grid-template-columns: 6.75rem minmax(0, 1fr) auto; gap: .75rem; align-items: center;
+          padding: .625rem 0; border-top: 1px solid var(--dt-line); }
+.dt .dt-time { font-variant-numeric: tabular-nums; color: var(--dt-text); font-size: .9375rem; }
+.dt .dt-main { min-width: 0; display: flex; flex-direction: column; }
+.dt .dt-name { font-weight: 600; color: var(--dt-text); font-size: .9375rem; overflow-wrap: anywhere; }
+.dt .dt-sub { font-size: .8125rem; color: var(--dt-muted); }
+.dt .dt-tag { font-size: .6875rem; font-weight: 600; padding: .0625rem .375rem; border-radius: 999px;
+          background: color-mix(in srgb, var(--dt-accent) 14%, transparent); color: var(--dt-text); vertical-align: 1px; }
+.dt .dt-full { font-weight: 600; color: #c0392b; }
+.dt .dt-row.is-cancelled .dt-time, .dt .dt-row.is-cancelled .dt-name { color: var(--dt-muted); text-decoration: line-through; }
+.dt .dt-cancelled { color: #c0392b; font-weight: 600; }
+.dt a.dt-btn { display: inline-block; white-space: nowrap; padding: .375rem .75rem; border-radius: var(--dt-radius);
+          background: var(--dt-accent); color: var(--dt-on-accent); text-decoration: none; font-size: .8125rem; font-weight: 600; }
+.dt a.dt-btn:hover { filter: brightness(.92); }
+.dt a.dt-btn:focus-visible { outline: 2px solid var(--dt-accent); outline-offset: 2px; }
+.dt .dt-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.dt .dt-empty { color: var(--dt-muted); font-size: .9375rem; margin: .5rem 0; }
+@media (max-width: 30rem) {
+    .dt .dt-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: .125rem; }
+    .dt .dt-time { grid-column: 1 / -1; font-size: .8125rem; color: var(--dt-muted); }
+}
+</style>

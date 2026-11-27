@@ -78,6 +78,14 @@ If several clubs share your instance, list each website against its own club, e.
 
 The rate limit counts the address the request came from. Behind a reverse proxy every request comes from the proxy, so set `TRUST_PROXY_HTTPS=true` (see [Running behind a reverse proxy](#running-behind-a-reverse-proxy)): Dojo then counts the address your proxy puts last in `X-Forwarded-For`. Without a proxy that header is ignored, since anyone could send a made-up one.
 
+### Showing a club's timetable on its website
+
+Clubs set this up themselves under **Settings → Website**: switch on the public timetable, list their website addresses, and copy the snippet, which loads `SITE_URL/embed.js`. It shows `SITE_URL/embed/<club>/timetable/` in a frame that sizes itself to fit. Nothing needs configuring on the server, but note:
+
+- The timetable page sends `Content-Security-Policy: frame-ancestors 'self' <the club's websites>`, so only those sites can frame it. If your reverse proxy adds its own `X-Frame-Options` or `Content-Security-Policy` header to every response, exclude `/embed/` or the widget will be blocked.
+- The snippet uses `SITE_URL`, so set it to the public address clubs' visitors can reach.
+- The timetable page is public and cached by browsers for five minutes, so a cancellation can take up to five minutes to show.
+
 ### `SITE_URL` and security headers
 
 Secure cookies, CSRF, HSTS, and the HTTPS redirect are all keyed off whether `SITE_URL` starts with `https://` — **not** off `DEBUG`. This is deliberate: a lot of self-hosted instances run behind a reverse proxy on plain HTTP internally, and forcing HTTPS redirects in that setup would break them. Once you have TLS terminated in front of your instance (see below), set `SITE_URL=https://yourdomain.com` and those protections switch on automatically.
