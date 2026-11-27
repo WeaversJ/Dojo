@@ -420,11 +420,14 @@ class FinderDayTests(TimetableTestBase):
         self.assertNotContains(self.client.get(reverse('network_finder')), 'id="n-days"')
 
 
-class ClubPageOrderTests(TimetableTestBase):
-    def test_timetable_sits_between_about_and_apply_to_join(self):
+class ClubPageLayoutTests(TimetableTestBase):
+    def test_timetable_under_about_and_apply_to_join_between_the_map_and_reviews(self):
+        from django.test import override_settings
         self.org.about = 'We are a friendly club.'
         self.org.save()
-        page = self.client.get(reverse('network_club', kwargs={'slug': self.org.slug})).content.decode()
-        about, table, apply = page.index('id="about"'), page.index('id="timetable"'), page.index('Apply to join')
-        self.assertLess(about, table)
-        self.assertLess(table, apply)
+        with override_settings(GOOGLE_MAPS_API_KEY='test-key'):
+            page = self.client.get(reverse('network_club', kwargs={'slug': self.org.slug})).content.decode()
+        # Left column: About, then the timetable. Right column: the map, Apply to join, then the reviews.
+        spots = [page.index(marker) for marker in ('id="about"', 'id="timetable"', 'id="n-club-map"', 'id="join"',
+                                                    'Apply to join', 'id="reviews"')]
+        self.assertEqual(spots, sorted(spots))
