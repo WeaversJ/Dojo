@@ -10,6 +10,7 @@ from dojo.mixins import ClassCapabilityMixin, ClassCoachMixin, OrgAdminMixin, Or
 from members.models import Member
 
 from .models import (
+    in_week_order,
     Attendance, Class, ClassCoach, ClassHelper, ClassMember, Session, SessionCoach, SessionHelper,
     WaitingList,
 )
@@ -164,9 +165,7 @@ class ClassListView(OrgAdminMixin, ListView):
 
     def get_queryset(self):
         return (
-            Class.objects.filter(organisation=self.org)
-            .prefetch_related('enrolments', 'coaches')
-            .order_by('name')
+            in_week_order(Class.objects.filter(organisation=self.org).prefetch_related('enrolments', 'coaches'))
         )
 
 
@@ -443,7 +442,7 @@ class BulkGenerateSessionsView(OrgAdminMixin, View):
     def _rows(self):
         today = date.today()
         rows = []
-        for cls in Class.objects.filter(organisation=self.org).order_by('name'):
+        for cls in in_week_order(Class.objects.filter(organisation=self.org)):
             upcoming = cls.sessions.filter(date__gte=today, is_cancelled=False).order_by('date')
             rows.append({'cls': cls, 'upcoming': upcoming.count(), 'last': upcoming.last(), 'has_schedule': bool(cls.schedule)})
         return rows
@@ -637,14 +636,13 @@ class CoachClassListView(OrgMixin, ListView):
         if self.request.user.is_superuser or (
             self.org_membership and self.org_membership.role == 'org_admin'
         ):
-            return Class.objects.filter(organisation=self.org).prefetch_related('sessions').order_by('name')
-        return (
+            return in_week_order(Class.objects.filter(organisation=self.org).prefetch_related('sessions'))
+        return in_week_order(
             Class.objects.filter(
                 organisation=self.org,
                 coaches__user=self.request.user,
             )
             .prefetch_related('sessions')
-            .order_by('name')
         )
 
 
@@ -970,7 +968,7 @@ class AttendanceAnalyticsView(AttendanceScopeMixin, View):
             'count_at_risk': count_at_risk,
             'count_absent': count_absent,
             'total_sessions_4w': total_sessions_4w,
-            'classes': classes,
+            'classes': in_week_order(classes),
             'selected_class': class_pk,
             'sort': sort,
             'today': today,

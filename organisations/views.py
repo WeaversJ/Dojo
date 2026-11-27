@@ -1159,13 +1159,14 @@ class AnnouncementListView(OrgMixin, View):
         return classes.order_by('name')
 
     def get(self, request, org_slug):
+        from classes.models import in_week_order
         announcements = Announcement.objects.filter(organisation=self.org)
         classes = self._sendable_classes()
         return render(request, 'org/announcements.html', {
             'org': self.org,
             'org_membership': self.org_membership,
             'announcements': announcements,
-            'classes': classes,
+            'classes': in_week_order(classes),
         })
 
     def post(self, request, org_slug):
