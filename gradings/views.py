@@ -79,7 +79,10 @@ class GradingDetailView(OrgMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context['sessions'] = self.object.sessions.order_by('-date')[:15]
+        # The 15 most recent, shown oldest to newest, then A to Z on the same date (as class lists read).
+        from django.db.models.functions import Lower
+        recent = self.object.sessions.order_by('-date', Lower('name').desc(), '-pk')[:15]
+        context['sessions'] = list(reversed(recent))
         context['today'] = date.today()
         return context
 
