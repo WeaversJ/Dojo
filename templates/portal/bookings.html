@@ -17,7 +17,11 @@
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-body py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
         <div class="small">
-            {% if plan.policy %}
+            {% if bundle.on %}
+            <span class="fw-semibold">{{ plan.policy.name }}</span>
+            <span class="text-muted">· session bundle ·</span> <span class="fw-semibold" id="sessions-left">{{ bundle.wallet.left }} session{{ bundle.wallet.left|pluralize }} left</span>
+            <span class="text-muted">· each session you book uses one</span>
+            {% elif plan.policy %}
             <span class="fw-semibold">{{ plan.policy.name }}</span>{% if plan.limited and plan.period == 'week' %} <span class="text-muted">(weeks run Monday to Sunday)</span>{% endif %}
             <span class="text-muted">· {{ plan.policy.limit_text }}{% if plan.limited %} · {{ plan.used }} of {{ plan.limit }} used in {{ plan.period_label }}{% elif plan.class_limited %} · enrolled in {{ plan.classes_used }} of {{ plan.class_limit }}{% endif %}</span>
             {% else %}
@@ -29,7 +33,7 @@
             {% endif %}
         </div>
         {% if 'billing' in org.enabled_features %}
-        <a href="{% url 'portal_plans' token=member.token %}" class="btn btn-sm btn-outline-dark">{% if plan.policy %}Change plan{% else %}Choose a plan{% endif %}</a>
+        <a href="{% url 'portal_plans' token=member.token %}" class="btn btn-sm btn-outline-dark">{% if bundle.on %}{% if bundle.wallet.left %}Your bundle{% else %}Buy another bundle{% endif %}{% elif plan.policy %}Change plan{% else %}Choose a plan{% endif %}</a>
         {% endif %}
     </div>
 </div>
@@ -55,7 +59,7 @@
             <span class="book-cal-key st-booked"></span> You're booked in
             <span class="book-cal-key st-open ms-2"></span> Spaces available
             <span class="book-cal-key st-full ms-2"></span> Full
-            <span class="book-cal-key st-limit ms-2"></span> Plan limit reached{% if extra_payable %} (extra sessions £{{ extra_price|floatformat:2 }}, paid when you book){% endif %}.
+            <span class="book-cal-key st-limit ms-2"></span> {% if bundle.on %}No sessions left in your bundle{% else %}Plan limit reached{% endif %}{% if extra_payable %} (extra sessions £{{ extra_price|floatformat:2 }}, paid when you book){% endif %}.
             Tap a day to see its classes.
         </p>
     </div>
@@ -86,6 +90,8 @@
                 <span class="badge bg-success-subtle text-success">Booked</span>
                 {% elif e.full %}
                 <span class="small text-muted">Full</span>
+                {% elif e.over_limit and bundle.on %}
+                <a href="{% url 'portal_plans' token=member.token %}" class="small" title="Your bundle has no sessions left for this date">No sessions left: buy a bundle</a>
                 {% elif e.over_limit and not extra_payable %}
                 <span class="small text-muted" title="Your plan's session limit is reached for this period">Plan limit reached</span>
                 {% else %}
@@ -99,6 +105,7 @@
                     <div class="small text-muted text-end mt-1">Extra session</div>
                     {% else %}
                     <button type="submit" class="btn btn-sm btn-outline-dark">{% if needs_plan and single_payable %}Book and pay £{{ single_price|floatformat:2 }}{% else %}Book{% endif %}</button>
+                    {% if bundle.on %}<div class="small text-muted text-end mt-1">Uses 1 session</div>{% endif %}
                     {% endif %}
                 </form>
                 {% endif %}

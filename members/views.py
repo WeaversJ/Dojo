@@ -367,6 +367,10 @@ class MemberDetailView(OrgAdminMixin, DetailView):
         context['org_policies'] = BillingPolicy.objects.filter(
             organisation=self.org, is_active=True
         ).prefetch_related('discounts')
+        # Session bundles: the member's wallet, and the bundles staff can add for them.
+        from billing import bundles
+        context['bundle_policies'] = [p for p in context['org_policies'] if p.is_bundle and p.bundle_sessions]
+        context['wallet'] = bundles.wallet(self.object)
         from . import family
         context['family_group'] = family.family_group(self.object)
         context['family_people'] = family.siblings(self.object) if context['family_group'] else []
@@ -459,6 +463,46 @@ class MemberBillingPolicySetView(OrgAdminMixin, View):
                                       f'members: {", ".join(m.name for m in changed)}.')
         else:
             messages.success(request, f'Billing policy updated for {member.name}.')
+        return redirect_to_member(self.org.slug, member.pk, 'billing')
+
+
+class MemberBundleAddView(OrgAdminMixin, View):
+    """
+    Add a session bundle for a member, from their page: already paid (cash or bank transfer, recorded
+    now, so the sessions are added straight away), or invoiced, with the sessions added when it's paid.
+    """
+    required_feature = 'billing'
+
+    def post(self, request, org_slug, pk):
+        from django.db import transaction
+        from django.utils import timezone
+
+        from billing import bundles
+        from billing.models import BillingPolicy, Payment
+        member = get_object_or_404(Member, pk=pk, organisation=self.org)
+        policy = get_object_or_404(BillingPolicy, pk=request.POST.get('policy_id'), organisation=self.org,
+                                   pricing_model=BillingPolicy.PricingModel.BUNDLE)
+        paid = request.POST.get('paid', '')
+        if paid not in ('', Payment.Method.CASH, Payment.Method.BACS):
+            paid = ''
+        with transaction.atomic():
+            if member.billing_policy_id is None:
+                from .family import assign_plan
+                assign_plan(member, policy)
+            staff = request.user.get_full_name() or request.user.get_username()
+            bundle = bundles.buy(member, policy, added_by=staff)
+            if paid and bundle.invoice is not None:
+                Payment.objects.create(invoice=bundle.invoice, amount=bundle.invoice.amount, method=paid,
+                                       paid_at=timezone.now(), notes=f'Recorded by {staff} when adding the bundle')
+                bundle.invoice.status = 'paid'
+                bundle.invoice.save(update_fields=['status'])   # adds the sessions (billing.signals)
+        bundle.refresh_from_db()
+        if bundle.status == bundle.Status.ACTIVE:
+            messages.success(request, f'{policy.name} added: {member.name} has {bundle.sessions} more '
+                                      f'session{"s" if bundle.sessions != 1 else ""} to book with.')
+        else:
+            messages.success(request, f'{policy.name} added for {member.name}, with an invoice for '
+                                      f'£{bundle.price}. The sessions are added when it\'s paid.')
         return redirect_to_member(self.org.slug, member.pk, 'billing')
 
 

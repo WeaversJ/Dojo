@@ -10,10 +10,50 @@
 </p>
 
 
+{% if just_bought %}
+<div class="alert alert-success small"><i class="bi bi-check-circle me-1"></i> Thanks! Your sessions are added as soon as your payment is confirmed, usually within a minute. Refresh this page to see them.</div>
+{% endif %}
+
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-header bg-white border-bottom py-3"><h6 class="mb-0">My plan</h6></div>
     <div class="card-body">
-        {% if plan.policy %}
+        {% if bundle.on %}
+        {# A session bundle: the sessions left, each bundle, and buying another. #}
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+            <div>
+                <div class="fw-semibold">{{ plan.policy.name }} <span class="badge bg-primary-subtle text-primary-emphasis border border-primary-subtle fw-normal"><i class="bi bi-ticket-perforated me-1"></i>Session bundle</span></div>
+                <div class="small text-muted">{{ plan.policy.price_summary }}{% if plan.policy.bundle_valid_weeks %}, used within {{ plan.policy.bundle_valid_weeks }} week{{ plan.policy.bundle_valid_weeks|pluralize }}{% endif %}</div>
+            </div>
+            <div class="text-end">
+                <div class="fs-4 fw-bold lh-1" id="sessions-left">{{ bundle.wallet.left }}</div>
+                <div class="small text-muted">session{{ bundle.wallet.left|pluralize }} left</div>
+            </div>
+        </div>
+        {% for b in bundle.wallet.bundles %}
+        <div class="d-flex flex-wrap justify-content-between gap-2 small py-2 border-top">
+            <span>{{ b.name }} <span class="text-muted">· {% if b.activated_at %}bought {{ b.activated_at|date:"j M Y" }}{% else %}started {{ b.created_at|date:"j M Y" }}{% endif %}</span></span>
+            {% if b.status == 'pending' %}
+            <span><span class="badge bg-warning-subtle text-warning-emphasis">Waiting for payment</span>{% if b.pay_url %} <a href="{{ b.pay_url }}">Pay £{{ b.price|floatformat:2 }}</a>{% endif %}</span>
+            {% else %}
+            <span>{{ b.left }} of {{ b.sessions }} left{% if b.expires_on %} <span class="text-muted">· use by {{ b.expires_on|date:"j M Y" }}</span>{% endif %}</span>
+            {% endif %}
+        </div>
+        {% endfor %}
+        <p class="small text-muted mt-2 mb-3">
+            Each session you book uses one, and not turning up still uses it.
+            {% if plan.policy.bundle_cancel_returns %}Cancel by the time bookings close and you get the session back.{% else %}Cancelling a booking doesn't give the session back.{% endif %}
+            If the club cancels a session, you get it back.
+        </p>
+        {% if plan.policy.is_active and plan.policy.member_selectable %}
+        <form method="post" action="{% url 'portal_booking_action' token=member.token %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="buy_bundle">
+            <input type="hidden" name="policy_id" value="{{ plan.policy.pk }}">
+            <button type="submit" class="btn btn-dark btn-sm">Buy another bundle: {{ plan.policy.price_summary }}</button>
+            {% if not bundle.payable %}<div class="form-text">This adds an invoice to pay the club. Your sessions are added once they have your payment.</div>{% endif %}
+        </form>
+        {% endif %}
+        {% elif plan.policy %}
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
             <div>
                 <div class="fw-semibold">{{ plan.policy.name }}{% if plan.policy.is_family_plan %} <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-normal">Family plan</span>{% endif %}</div>
@@ -64,16 +104,23 @@
             {% for p in plans %}
             <form method="post" action="{% url 'portal_booking_action' token=member.token %}"
                   class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded p-2"
-                  data-confirm="{% if p.is_family_plan %}Switch to {{ p.name }}? It’s a family plan, so it will be put on everyone in your family.{% else %}Switch {{ member.name }} to {{ p.name }}? This changes what is billed from the next invoice.{% endif %}">
+                  data-confirm="{% if p.is_bundle %}Buy {{ p.name }} ({{ p.price_summary }})?{% if plan.policy and not bundle.on %} It replaces your {{ plan.policy.name }} plan: you'll book sessions one at a time, each using one from the bundle.{% endif %}{% if bundle.payable %} You'll pay on the next page.{% else %} This adds an invoice to pay the club.{% endif %}{% elif p.is_family_plan %}Switch to {{ p.name }}? It’s a family plan, so it will be put on everyone in your family.{% else %}Switch {{ member.name }} to {{ p.name }}? This changes what is billed from the next invoice.{% endif %}">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="choose_plan">
                 <input type="hidden" name="policy_id" value="{{ p.pk }}">
                 <div>
+                    {% if p.is_bundle %}
+                    <div class="small fw-semibold">{{ p.name }} <span class="badge bg-primary-subtle text-primary-emphasis border border-primary-subtle fw-normal">Session bundle</span><span class="text-muted fw-normal"> · {{ p.price_summary }}</span></div>
+                    <div class="small text-muted">{{ p.bundle_text|capfirst }}{% if p.plan_description %} · {{ p.plan_description }}{% endif %}</div>
+                    {% else %}
                     <div class="small fw-semibold">{{ p.name }}{% if p.is_family_plan %} <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-normal">Family plan{% if p.max_family_members %}: up to {{ p.max_family_members }} people{% endif %}</span>{% endif %}<span class="text-muted fw-normal"> · {{ p.display_amount }} {{ p.get_billing_cycle_display|lower }}</span></div>
                     <div class="small text-muted">{{ p.limit_text }}{% if p.plan_description %} · {{ p.plan_description }}{% endif %}</div>
+                    {% endif %}
                 </div>
                 {% if plan.policy.pk == p.pk %}
                 <span class="badge bg-success-subtle text-success">Your plan</span>
+                {% elif p.is_bundle %}
+                <button type="submit" class="btn btn-sm btn-dark" name="action" value="buy_bundle">Buy</button>
                 {% else %}
                 <button type="submit" class="btn btn-sm btn-outline-dark">Choose</button>
                 {% endif %}

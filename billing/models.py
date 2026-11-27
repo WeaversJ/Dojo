@@ -16,6 +16,7 @@ class BillingPolicy(models.Model):
     class PricingModel(models.TextChoices):
         FLAT = 'flat', 'Flat rate'
         PER_SESSION = 'per_session', 'Per session'
+        BUNDLE = 'bundle', 'Session bundle'
 
     organisation = models.ForeignKey(Organisation, on_delete=models.CASCADE, related_name='billing_policies')
     name = models.CharField(max_length=255)
@@ -74,16 +75,46 @@ class BillingPolicy(models.Model):
                   'bookings don\'t count. Blank means unlimited.',
     )
 
+    # Session bundle: members buy a number of sessions up front (the price is `amount`) and each session
+    # they book uses one. See billing/bundles.py. Never invoiced automatically.
+    bundle_sessions = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MinValueValidator(1)],
+        help_text='Session bundles: how many sessions the bundle buys.',
+    )
+    bundle_valid_weeks = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MinValueValidator(1)],
+        help_text='Session bundles: weeks from buying to use the sessions in. Blank: they never run out.',
+    )
+    bundle_cancel_returns = models.BooleanField(
+        default=True,
+        help_text='Session bundles: cancelling a booking (while online changes are open) gives the session back. '
+                  'Booking and not turning up always uses it.',
+    )
+
+    @property
+    def is_bundle(self):
+        return self.pricing_model == self.PricingModel.BUNDLE
+
     @property
     def limits_classes(self):
-        return self.limit_type == self.LimitType.CLASSES and bool(self.class_limit)
+        return not self.is_bundle and self.limit_type == self.LimitType.CLASSES and bool(self.class_limit)
 
     @property
     def limits_sessions(self):
-        return self.limit_type != self.LimitType.CLASSES and bool(self.session_limit)
+        return not self.is_bundle and self.limit_type != self.LimitType.CLASSES and bool(self.session_limit)
+
+    def bundle_text(self):
+        """'10 sessions' or '10 sessions, used within 12 weeks'."""
+        n = self.bundle_sessions or 0
+        text = f"{n} session{'s' if n != 1 else ''}"
+        if self.bundle_valid_weeks:
+            text += f", used within {self.bundle_valid_weeks} week{'s' if self.bundle_valid_weeks != 1 else ''}"
+        return text
 
     def limit_text(self):
-        """'Unlimited sessions', or e.g. '2 sessions a week' or 'Up to 2 classes at a time'."""
+        """'Unlimited sessions', or e.g. '2 sessions a week', 'Up to 2 classes at a time' or '10 sessions'."""
+        if self.is_bundle:
+            return self.bundle_text().capitalize()
         if self.limits_classes:
             return f"Up to {self.class_limit} class{'es' if self.class_limit != 1 else ''} at a time"
         if not self.limits_sessions:
@@ -91,12 +122,16 @@ class BillingPolicy(models.Model):
         return f"{self.session_limit} session{'s' if self.session_limit != 1 else ''} {self.get_limit_period_display()}"
 
     def __str__(self):
+        if self.is_bundle:
+            return f"{self.name} (£{self.amount} for {self.bundle_sessions} sessions)"
         if self.pricing_model == self.PricingModel.PER_SESSION:
             return f"{self.name} (£{self.per_session_rate}/session / {self.get_billing_cycle_display()})"
         return f"{self.name} (£{self.amount} flat / {self.get_billing_cycle_display()})"
 
     def price_summary(self):
-        """For members: '£40 a month', '£5 a session', or just the price for custom billing."""
+        """For members: '£40 a month', '£5 a session', '£60 for 10 sessions', or just the price for custom billing."""
+        if self.is_bundle:
+            return f"£{self.amount} for {self.bundle_sessions} session{'s' if self.bundle_sessions != 1 else ''}"
         if self.pricing_model == self.PricingModel.PER_SESSION:
             return f"£{self.per_session_rate} a session" if self.per_session_rate is not None else ''
         if self.amount is None:
@@ -106,6 +141,8 @@ class BillingPolicy(models.Model):
         return f"£{self.amount}{per}"
 
     def display_amount(self):
+        if self.is_bundle:
+            return self.price_summary()
         if self.pricing_model == self.PricingModel.PER_SESSION:
             return f"£{self.per_session_rate}/session"
         return f"£{self.amount}"
@@ -114,6 +151,69 @@ class BillingPolicy(models.Model):
         ordering = ['organisation', 'name']
         verbose_name = 'Billing policy'
         verbose_name_plural = 'Billing policies'
+
+
+class SessionBundle(models.Model):
+    """
+    Sessions a member has bought on a session-bundle policy: their "wallet". Bought online (paid at
+    Stripe Checkout) or added by the club; it's active, and its sessions usable, once its invoice is
+    paid. Each session booked records a BundleUse. The policy's terms are copied here when it's
+    bought, so changing the policy later doesn't change bundles already bought.
+    """
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Waiting for payment'
+        ACTIVE = 'active', 'Active'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    organisation = models.ForeignKey(Organisation, on_delete=models.CASCADE, related_name='session_bundles')
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='session_bundles')
+    policy = models.ForeignKey(BillingPolicy, on_delete=models.SET_NULL, null=True, blank=True, related_name='bundles')
+    name = models.CharField(max_length=255)
+    sessions = models.PositiveSmallIntegerField(validators=[MinValueValidator(1)])
+    price = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    cancel_returns = models.BooleanField(default=True)
+    valid_weeks = models.PositiveSmallIntegerField(null=True, blank=True)
+    invoice = models.ForeignKey('Invoice', on_delete=models.SET_NULL, null=True, blank=True, related_name='session_bundles')
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    expires_on = models.DateField(null=True, blank=True, help_text='Last day a session can be used (blank: never)')
+    added_by = models.CharField(max_length=255, blank=True, help_text='Staff member who added it, if not bought online')
+
+    class Meta:
+        ordering = ['member', 'created_at']
+
+    def __str__(self):
+        return f'{self.member}: {self.name} ({self.sessions} sessions, {self.status})'
+
+    @property
+    def used(self):
+        if hasattr(self, 'used_count'):
+            return self.used_count
+        return self.uses.filter(returned_at__isnull=True).count()
+
+    @property
+    def left(self):
+        return max(0, self.sessions - self.used)
+
+    def usable_on(self, day):
+        return self.status == self.Status.ACTIVE and (self.expires_on is None or day <= self.expires_on)
+
+
+class BundleUse(models.Model):
+    """One session taken from a bundle by a booking. Given back (returned_at) when the club allows it."""
+    bundle = models.ForeignKey(SessionBundle, on_delete=models.CASCADE, related_name='uses')
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='bundle_uses')
+    session = models.ForeignKey('classes.Session', on_delete=models.CASCADE, related_name='bundle_uses')
+    created_at = models.DateTimeField(auto_now_add=True)
+    returned_at = models.DateTimeField(null=True, blank=True)
+    returned_why = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f'{self.member} — {self.session} ({"returned" if self.returned_at else "used"})'
 
 
 class OrgTerm(models.Model):

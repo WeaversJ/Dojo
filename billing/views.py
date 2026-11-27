@@ -559,7 +559,8 @@ class BulkInvoiceView(BillingManagerMixin, View):
         return rows
 
     def get(self, request, org_slug):
-        policies = BillingPolicy.objects.filter(organisation=self.org, is_active=True)
+        policies = BillingPolicy.objects.filter(organisation=self.org, is_active=True).exclude(
+            pricing_model=BillingPolicy.PricingModel.BUNDLE)   # bundles are bought as needed
         terms = OrgTerm.objects.filter(organisation=self.org).order_by('-start_date')
         term, year, month, period_label = self._resolve_period(request)
 
@@ -787,10 +788,51 @@ def _plan_fields(post):
     }, None
 
 
+def _bundle_fields(post):
+    """
+    A session bundle's part of a policy form: (values, error). A bundle is bought as needed, so it has no
+    billing cycle (it's never in an invoice run) and no booking limit: each session booked uses one.
+    """
+    def number(field, low, high, label, blank_ok):
+        raw = post.get(field, '').strip()
+        if not raw:
+            return (None, None) if blank_ok else (None, f'Enter {label}.')
+        if not raw.isdigit() or not low <= int(raw) <= high:
+            return None, f'{label[0].upper()}{label[1:]} must be a whole number from {low} to {high}.'
+        return int(raw), None
+    sessions, error = number('bundle_sessions', 1, 999, 'how many sessions the bundle buys', False)
+    if error:
+        return None, error
+    weeks, error = number('bundle_valid_weeks', 1, 520, 'the weeks to use the sessions in', True)
+    if error:
+        return None, error
+    return {
+        'pricing_model': BillingPolicy.PricingModel.BUNDLE, 'billing_cycle': BillingPolicy.BillingCycle.CUSTOM,
+        'bundle_sessions': sessions, 'bundle_valid_weeks': weeks,
+        'bundle_cancel_returns': post.get('bundle_cancel_returns') == '1',
+        'member_selectable': post.get('member_selectable') == '1',
+        'plan_description': post.get('plan_description', '').strip(),
+        'limit_type': BillingPolicy.LimitType.SESSIONS, 'session_limit': None, 'class_limit': None,
+        'is_family_plan': False, 'max_family_members': None,
+    }, None
+
+
+def _policy_type_fields(post, policy=None):
+    """The fields that depend on the policy's type (regular plan or session bundle): (values, error)."""
+    if post.get('policy_type') == 'bundle':
+        return _bundle_fields(post)
+    values, error = _plan_fields(post)
+    if values is not None and (policy is None or policy.is_bundle):
+        values['pricing_model'] = BillingPolicy.PricingModel.FLAT   # (an existing per-session policy stays per-session)
+    return values, error
+
+
 class BillingPolicyCreateView(BillingManagerMixin, View):
     def post(self, request, org_slug):
         name = request.POST.get('name', '').strip()
         billing_cycle = request.POST.get('billing_cycle', '').strip()
+        if request.POST.get('policy_type') == 'bundle':
+            billing_cycle = BillingPolicy.BillingCycle.CUSTOM
         amount = request.POST.get('amount', '').strip()
         description = request.POST.get('description', '').strip()
 
@@ -805,7 +847,7 @@ class BillingPolicyCreateView(BillingManagerMixin, View):
             messages.error(request, f'Invalid amount: {"; ".join(e.messages) if hasattr(e, "messages") else "not a valid number"}')
             return redirect('billing_policies', org_slug=self.org.slug)
 
-        plan, error = _plan_fields(request.POST)
+        plan, error = _policy_type_fields(request.POST)
         if error:
             messages.error(request, error)
             return redirect('billing_policies', org_slug=self.org.slug)
@@ -813,10 +855,9 @@ class BillingPolicyCreateView(BillingManagerMixin, View):
         BillingPolicy.objects.create(
             organisation=self.org,
             name=name,
-            billing_cycle=billing_cycle,
             amount=amount_val,
             description=description,
-            **plan,
+            **{'billing_cycle': billing_cycle, **plan},
         )
         messages.success(request, f'Policy "{name}" created.')
         return redirect('billing_policies', org_slug=self.org.slug)
@@ -834,7 +875,7 @@ class BillingPolicyEditView(BillingManagerMixin, View):
         except (InvalidOperation, ValidationError) as e:
             messages.error(request, f'Invalid amount: {"; ".join(e.messages) if hasattr(e, "messages") else "not a valid number"}')
             return redirect('billing_policies', org_slug=self.org.slug)
-        plan, error = _plan_fields(request.POST)
+        plan, error = _policy_type_fields(request.POST, policy)
         if error:
             messages.error(request, error)
             return redirect('billing_policies', org_slug=self.org.slug)

@@ -70,6 +70,16 @@
             {% if org.has_bookable_classes %}<a href="{% url 'portal_bookings' token=member.token %}">Book a class</a>{% endif %}
         </div>
         <div class="card">
+            {% if bundle_left is not None %}
+            <a class="p-row" href="{% url 'portal_plans' token=member.token %}" id="bundle-left">
+                <span class="p-icon is-accent"><i class="bi bi-ticket-perforated-fill"></i></span>
+                <span class="p-row-main">
+                    <span class="p-row-title d-block">{{ bundle_left }} session{{ bundle_left|pluralize }} left in your bundle</span>
+                    <span class="p-row-sub d-block">{% if bundle_left %}Each session you book uses one{% else %}Buy another bundle to book more sessions{% endif %}</span>
+                </span>
+                <i class="bi bi-chevron-right text-muted"></i>
+            </a>
+            {% endif %}
             {% for row in up_next %}
             <div class="p-row">
                 <div class="p-date" aria-hidden="true">

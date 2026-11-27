@@ -666,7 +666,7 @@
                                 <div class="small fw-semibold text-muted mb-1">Billing policy</div>
                                 {% if member.billing_policy %}
                                 <div class="fw-medium">{{ member.billing_policy.name }}</div>
-                                <div class="text-muted small">£{{ member.billing_policy.amount }} / {{ member.billing_policy.get_billing_cycle_display|lower }}</div>
+                                <div class="text-muted small">{% if member.billing_policy.is_bundle %}Session bundle: {{ member.billing_policy.price_summary }}{% else %}£{{ member.billing_policy.amount }} / {{ member.billing_policy.get_billing_cycle_display|lower }}{% endif %}</div>
                                 {% else %}
                                 <span class="text-muted small">None assigned — falls back to class policy</span>
                                 {% endif %}
@@ -737,6 +737,44 @@
                             </div>
                         </div>
                     </div>
+                    {% if bundle_policies or wallet.bundles or wallet.past %}
+                    <!-- Session bundles -->
+                    <div class="card-body border-bottom py-3 px-3" id="session-bundles">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                            <div class="small fw-semibold text-muted"><i class="bi bi-ticket-perforated me-1"></i>Session bundles</div>
+                            <div class="small"><span class="fw-semibold">{{ wallet.left }}</span> session{{ wallet.left|pluralize }} left to book</div>
+                        </div>
+                        {% for b in wallet.bundles %}
+                        <div class="d-flex flex-wrap justify-content-between gap-2 small py-1 {% if not forloop.last %}border-bottom{% endif %}">
+                            <span>{{ b.name }} <span class="text-muted">· {% if b.activated_at %}from {{ b.activated_at|date:"j M Y" }}{% else %}added {{ b.created_at|date:"j M Y" }}{% endif %}{% if b.added_by %} by {{ b.added_by }}{% endif %}</span></span>
+                            <span class="text-nowrap">
+                                {% if b.status == 'pending' %}
+                                <span class="badge bg-warning-subtle text-warning-emphasis">Waiting for payment</span>{% if b.invoice %} <a href="{% url 'invoice_detail' org_slug=org.slug pk=b.invoice.pk %}">invoice</a>{% endif %}
+                                {% else %}
+                                {{ b.left }} of {{ b.sessions }} left{% if b.expires_on %} <span class="text-muted">· use by {{ b.expires_on|date:"j M Y" }}</span>{% endif %}
+                                {% endif %}
+                            </span>
+                        </div>
+                        {% endfor %}
+                        {% if wallet.past %}
+                        <div class="small text-muted mt-1">Used up or expired: {% for b in wallet.past %}{{ b.name }} ({{ b.used }} of {{ b.sessions }} used{% if b.expired %}, expired {{ b.expires_on|date:"j M" }}{% endif %}){% if not forloop.last %}; {% endif %}{% endfor %}</div>
+                        {% endif %}
+                        {% if bundle_policies %}
+                        <form method="post" action="{% url 'member_bundle_add' org_slug=org.slug pk=member.pk %}" class="d-flex flex-wrap gap-2 align-items-center mt-2">
+                            {% csrf_token %}
+                            <select name="policy_id" class="form-select form-select-sm" style="width:auto;" aria-label="Bundle">
+                                {% for p in bundle_policies %}<option value="{{ p.pk }}">{{ p.name }}: {{ p.price_summary }}</option>{% endfor %}
+                            </select>
+                            <select name="paid" class="form-select form-select-sm" style="width:auto;" aria-label="Payment">
+                                <option value="cash">Paid in cash</option>
+                                <option value="bacs">Paid by bank transfer</option>
+                                <option value="">Not paid yet: add an invoice</option>
+                            </select>
+                            <button type="submit" class="btn btn-sm btn-outline-secondary">Add bundle</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% endif %}
                     {% if invoices %}
                     <div class="card-body p-0">
                         <div class="table-responsive">
