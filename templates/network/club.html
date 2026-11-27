@@ -55,13 +55,28 @@
         </div></div>
     </section>
     {% endif %}
+    </section>
+
+    <section class="p-group">
+        {% if maps_key %}
+        <div id="n-club-map" style="height:22rem;border-radius:var(--p-radius);box-shadow:var(--p-shadow);background:var(--p-fill);" role="region" aria-label="Map showing {{ org.name }}"></div>
+        <script>
+        window.dojoClubMap = function () {
+            var at = {lat: {{ org.latitude|stringformat:'s' }}, lng: {{ org.longitude|stringformat:'s' }}};
+            var map = new google.maps.Map(document.getElementById('n-club-map'), {center: at, zoom: 15, streetViewControl: false, mapTypeControl: false, mapId: "{{ maps_map_id|escapejs }}"});
+            new google.maps.marker.AdvancedMarkerElement({map: map, position: at, title: "{{ org.name|escapejs }}", content: dojoPin()});
+        };
+        </script>
+        <script async src="https://maps.googleapis.com/maps/api/js?key={{ maps_key|urlencode }}&callback=dojoClubMap&loading=async&libraries=marker"></script>
+        {% endif %}
+        <div class="n-join{% if maps_key %} mt-3{% endif %}" id="join">
         {% for offer in intro_offers %}
-        <div class="p-banner mt-3" role="note">
+        <div class="p-banner mb-3" role="note">
             <i class="bi bi-gift-fill"></i>
             <span><strong>Intro offer:</strong> {{ offer.offer_text }}. Use code <span class="font-monospace fw-semibold">{{ offer.code }}</span>{% if offer.new_members_only %} (new members){% endif %}{% if offer.valid_until %}, until {{ offer.valid_until|date:"j F" }}{% endif %}.</span>
         </div>
         {% endfor %}
-        <div class="card mt-3">
+        <div class="card">
             <div class="card-body d-flex flex-wrap gap-2 align-items-center">
                 {% if status == 'member' %}
                 <span class="badge bg-success-subtle text-success me-auto">You're a member</span>
@@ -85,21 +100,8 @@
                 </form>
             </div>
         </div>
-    </section>
-
-    <section class="p-group">
-        {% if maps_key %}
-        <div id="n-club-map" style="height:22rem;border-radius:var(--p-radius);box-shadow:var(--p-shadow);background:var(--p-fill);" role="region" aria-label="Map showing {{ org.name }}"></div>
-        <script>
-        window.dojoClubMap = function () {
-            var at = {lat: {{ org.latitude|stringformat:'s' }}, lng: {{ org.longitude|stringformat:'s' }}};
-            var map = new google.maps.Map(document.getElementById('n-club-map'), {center: at, zoom: 15, streetViewControl: false, mapTypeControl: false, mapId: "{{ maps_map_id|escapejs }}"});
-            new google.maps.marker.AdvancedMarkerElement({map: map, position: at, title: "{{ org.name|escapejs }}", content: dojoPin()});
-        };
-        </script>
-        <script async src="https://maps.googleapis.com/maps/api/js?key={{ maps_key|urlencode }}&callback=dojoClubMap&loading=async&libraries=marker"></script>
-        {% endif %}
-    <section class="{% if maps_key %}mt-4{% endif %}" id="reviews" aria-labelledby="reviews-title">
+        </div>
+    <section class="mt-4" id="reviews" aria-labelledby="reviews-title">
         <div class="p-section"><h2 class="p-section-title" id="reviews-title">Reviews</h2></div>
         <div>
             <div>
