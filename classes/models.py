@@ -4,6 +4,17 @@ from organisations.models import Organisation
 from members.models import Member
 
 
+def _start(entry):
+    """An entry's start time, comparable as text ('09:00' < '18:30'); no time sorts after any time."""
+    time = (entry.get('time') or '').strip()
+    return time.zfill(5) if time else '99:99'
+
+
+def in_week_order(classes):
+    """Classes in the order they fall in the week (Monday to Sunday, then by time), not by name."""
+    return sorted(classes, key=lambda cls: cls.week_order)
+
+
 class Class(models.Model):
     organisation = models.ForeignKey(Organisation, on_delete=models.CASCADE, related_name='classes')
     name = models.CharField(max_length=255)
@@ -14,11 +25,22 @@ class Class(models.Model):
 
     DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
+    def schedule_entries(self):
+        """The weekly schedule in week order: Monday first, then by start time."""
+        return sorted(self.schedule or [], key=lambda e: (e.get('day', 7), _start(e)))
+
+    @property
+    def week_order(self):
+        """Sorts classes as they fall in the week: first day and time on, then name. Unscheduled ones last."""
+        entries = self.schedule_entries()
+        first = entries[0] if entries else {}
+        return (first.get('day', 7), _start(first), self.name.lower())
+
     def schedule_display(self):
         if not self.schedule:
             return '—'
         parts = []
-        for entry in self.schedule:
+        for entry in self.schedule_entries():
             time_str = entry.get('time', '')
             end_str = entry.get('end', '')
             if time_str and end_str:

@@ -46,6 +46,7 @@
             <thead class="table-light">
                 <tr>
                     <th class="ps-3 small fw-semibold">Name</th>
+                    <th class="small fw-semibold">Next session</th>
                     <th class="small fw-semibold">Description</th>
                     <th class="small fw-semibold">Sessions</th>
                     <th class="small fw-semibold">Judoka</th>
@@ -58,6 +59,7 @@
                     <td class="ps-3">
                         <a href="{% url 'grading_detail' org_slug=org.slug pk=grading.pk %}" class="fw-semibold text-decoration-none">{{ grading.name }}</a>
                     </td>
+                    <td class="small text-nowrap">{% if grading.next_date %}{{ grading.next_date|date:"D j M Y" }}{% elif grading.last_date %}<span class="text-muted">Last held {{ grading.last_date|date:"j M Y" }}</span>{% else %}<span class="text-muted">No sessions yet</span>{% endif %}</td>
                     <td class="small text-muted">{{ grading.description|default:"—"|truncatechars:60 }}</td>
                     <td class="small text-muted">{{ grading.sessions_count }}</td>
                     <td class="small text-muted">{{ grading.judoka_count }}</td>

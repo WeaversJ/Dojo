@@ -11,6 +11,28 @@ from members.models import Member
 from .models import Grading, GradingAttendance, GradingSession
 
 
+def in_date_order(gradings, today):
+    """
+    Gradings in the order they happen: those with a session coming up first, soonest first; then
+    past ones, most recent first; then any without sessions yet, by name. Cancelled sessions don't
+    count. Each grading gets `next_date` and `last_date` for the list.
+    """
+    from django.db.models import Max, Min, Q
+    live = Q(sessions__is_cancelled=False)
+    gradings = list(gradings.annotate(
+        next_date=Min('sessions__date', filter=live & Q(sessions__date__gte=today)),
+        last_date=Max('sessions__date', filter=live & Q(sessions__date__lt=today)),
+    ))
+
+    def key(grading):
+        if grading.next_date:
+            return (0, grading.next_date.toordinal(), grading.name.lower())
+        if grading.last_date:
+            return (1, -grading.last_date.toordinal(), grading.name.lower())
+        return (2, 0, grading.name.lower())
+    return sorted(gradings, key=key)
+
+
 class GradingListView(OrgMixin, View):
     """
     List + create gradings. Uses OrgMixin (not OrgAdminMixin) — gradings are
@@ -18,7 +40,7 @@ class GradingListView(OrgMixin, View):
     not restricted to org admins the way class management is.
     """
     def get(self, request, org_slug):
-        gradings = Grading.objects.filter(organisation=self.org).order_by('name')
+        gradings = in_date_order(Grading.objects.filter(organisation=self.org), date.today())
         return render(request, 'gradings/list.html', {
             'org': self.org,
             'org_membership': self.org_membership,
@@ -57,7 +79,10 @@ class GradingDetailView(OrgMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context['sessions'] = self.object.sessions.order_by('-date')[:15]
+        # The 15 most recent, shown oldest to newest, then A to Z on the same date (as class lists read).
+        from django.db.models.functions import Lower
+        recent = self.object.sessions.order_by('-date', Lower('name').desc(), '-pk')[:15]
+        context['sessions'] = list(reversed(recent))
         context['today'] = date.today()
         return context
 
