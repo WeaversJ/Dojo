@@ -63,6 +63,14 @@ def calculate_invoice_amount(member, policy, term=None, year=None, month=None):
     people = cover[1] if cover else [member]
     names = [m.name for m in people]
 
+    if policy.is_bundle:
+        # Bought as needed (billing/bundles.py), so never part of an invoice run.
+        return {
+            'gross': Decimal('0'), 'discount': Decimal('0'), 'net': Decimal('0'), 'covers': [],
+            'breakdown': [{'label': 'Session bundle: bought as needed, not invoiced', 'amount': Decimal('0')}],
+            'discount_lines': [],
+        }
+
     # ── 1. Calculate gross ────────────────────────────────────────────────────
     if policy.pricing_model == policy.PricingModel.FLAT:
         gross = Decimal(str(policy.amount or 0))

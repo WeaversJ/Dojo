@@ -809,11 +809,14 @@ class CancelSessionView(OrgAdminMixin, View):
         session.is_cancelled = not was_cancelled
         session.save(update_fields=['is_cancelled'])
 
+        from billing import bundles
         if session.is_cancelled:
+            bundles.session_cancelled(session)   # anyone who used a bundle session on it gets it back
             messages.success(request, f'Session on {session.date} marked as cancelled.')
             if notify:
                 self._send_cancellation_emails(request, cls, session)
         else:
+            bundles.session_reinstated(session)
             messages.success(request, f'Session on {session.date} reinstated.')
 
         return redirect('class_detail', org_slug=self.org.slug, pk=cls.pk)

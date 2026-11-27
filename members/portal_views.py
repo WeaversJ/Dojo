@@ -140,6 +140,12 @@ def _up_next(member, limit=3):
     return rows[:limit]
 
 
+def _bundle_left(member):
+    """Sessions left in a member's session bundles, for the portal home (None if their plan isn't a bundle)."""
+    from billing import bundles
+    return bundles.wallet(member)['left'] if bundles.on_bundle(member) else None
+
+
 class PortalView(View):
     """The portal's Dashboard — what needs the member's attention (outstanding
     invoices, autopay status, credit/arrears) plus quick links into the other
@@ -176,6 +182,7 @@ class PortalView(View):
             'leaving_request': leaving_request,
             'session_counts': member.session_counts(),
             'up_next': _up_next(member),
+            'bundle_left': _bundle_left(member),
             **_payment_options(request, member),
         })
 
@@ -306,7 +313,17 @@ def _plan_context(member, quota, today):
     policy = member.billing_policy
     class_limited = bool(policy and policy.limits_classes)
     classes_used = booking.enrolled_class_count(member) if class_limited else None
+    from billing import bundles, payments
+    on_bundle = bundles.on_bundle(member)
+    wallet = bundles.wallet(member) if on_bundle or plans else None
+    for b in (wallet or {}).get('pending', []):
+        b.pay_url = reverse('invoice_pay', kwargs={'token': payments.pay_token(b.invoice)}) if b.invoice else ''
     return {
+        # Session bundles: what's left in the member's wallet, and whether they can buy online.
+        'bundle': {
+            'on': on_bundle, 'wallet': wallet, 'policy_selectable': bool(policy and policy.member_selectable),
+            'payable': payments.stripe_keys(org) is not None,
+        },
         'plan': {
             'policy': policy, 'limited': quota.limited, 'limit': quota.limit,
             'used': quota.used(), 'period': quota.period, 'period_label': quota.label(today),
@@ -348,6 +365,7 @@ class PortalPlansView(View):
             'org': member.organisation,
             'family_size': len(family_members(member)),
             'has_codes': _club_has_codes(member.organisation),
+            'just_bought': request.GET.get('bought') == '1',
             **_plan_context(member, booking.Quota(member, today), today),
         })
 
@@ -397,11 +415,16 @@ class PortalBookingView(View):
         # Whole-class enrolment cards.
         policy = member.billing_policy
         classes_full = bool(policy and policy.limits_classes and len(auto_ids) >= policy.class_limit)
+        from billing import bundles
+        on_bundle = bundles.on_bundle(member)
+        wallet_bundles = bundles.usable(member) if on_bundle else []
         cards = []
         for cls in classes:
             limit_msg = ''
             if cls.pk not in auto_ids and not needs_plan:
-                if classes_full:
+                if on_bundle:
+                    limit_msg = booking.BUNDLE_NO_ENROL.format(cls=cls.name)
+                elif classes_full:
                     limit_msg = (f'Your {policy.name} plan allows {policy.limit_text().lower()}, and you\'re '
                                  f'enrolled in {len(auto_ids)}. Leave a class to join this one, or book its sessions one at a time.')
                 else:
@@ -426,7 +449,9 @@ class PortalBookingView(View):
             by_date.setdefault(s.date, []).append({
                 'session': s, 'cls': s.assigned_class, 'time': booking.session_time_text(s),
                 'enrolled': s.assigned_class_id in auto_ids, 'absent': s.pk in absent_ids, 'booked': s.pk in booked_ids,
-                'pending': s.pk in pending_ids, 'full': booking.session_is_full(s), 'over_limit': not quota.can_add(s),
+                'pending': s.pk in pending_ids, 'full': booking.session_is_full(s),
+                # A bundle: nothing left that can be used on that date. Otherwise the plan's session limit.
+                'over_limit': (not any(b.usable_on(s.date) for b in wallet_bundles)) if on_bundle else not quota.can_add(s),
             })
         days = [
             {'date': day, 'iso': day.isoformat(), 'entries': sorted(entries, key=lambda e: (e['time'] or '99', e['cls'].name))}
@@ -533,6 +558,8 @@ class PortalBookingActionView(View):
                             messages.warning(request, f'{m.name} is enrolled in {enrolled} classes, more than '
                                                       f'{policy.name} allows. They stay on them, but can\'t join '
                                                       f'another until they\'ve left enough to be under {policy.class_limit}.')
+            elif action == 'buy_bundle':
+                return self._buy_bundle(request, member, token)
             elif action == 'apply_code':
                 # A promo code on the Plans page: puts them on the plan it's for, if they can choose it themselves.
                 from django.http import Http404
@@ -570,7 +597,13 @@ class PortalBookingActionView(View):
                         # No plan: pay for the session first. It's confirmed when Stripe's webhook says it's paid.
                         back = request.build_absolute_uri(reverse('portal_bookings', kwargs={'token': token}))
                         return redirect(booking.start_payment(made, back), permanent=False)
-                    messages.success(request, 'You\'re booked in. A confirmation email is on its way.')
+                    if booking.on_bundle(member):
+                        from billing import bundles
+                        left = bundles.sessions_left(member)
+                        messages.success(request, f'You\'re booked in, using 1 session from your bundle: {left} '
+                                                  f'left. A confirmation email is on its way.')
+                    else:
+                        messages.success(request, 'You\'re booked in. A confirmation email is on its way.')
                 elif action == 'skip_session':
                     booking.skip_session(member, session)
                     messages.success(request, 'You\'re marked as not attending. A confirmation email is on its way.')
@@ -578,8 +611,17 @@ class PortalBookingActionView(View):
                     booking.rejoin_session(member, session)
                     messages.success(request, 'You\'re back on the register for that session. A confirmation email is on its way.')
                 else:
+                    from billing import bundles
+                    use = bundles.current_use(member, session)
                     paid = booking.cancel_session_booking(member, session)
-                    if paid is not None:
+                    if use is not None:
+                        use.refresh_from_db()
+                        if use.returned_at:
+                            messages.success(request, 'Your booking is cancelled, and the session is back in your bundle.')
+                        else:
+                            messages.success(request, 'Your booking is cancelled. Your bundle doesn\'t give sessions back '
+                                                      'when a booking is cancelled, so that session is still used.')
+                    elif paid is not None:
                         messages.success(request, 'Your booking is cancelled. You paid for this session, and '
                                                   'refunds aren\'t automatic: please contact the club.')
                     else:
@@ -589,6 +631,49 @@ class PortalBookingActionView(View):
         except booking.BookingError as e:
             messages.error(request, str(e))
         return redirect('portal_plans' if action in ('choose_plan', 'apply_code') else 'portal_bookings', token=token)
+
+    def _buy_bundle(self, request, member, token):
+        """
+        Buy a session bundle: it becomes the member's plan, and they pay at Stripe Checkout (the sessions
+        are added when Stripe says it's paid). If the club doesn't take card payments, an invoice is added
+        for them to pay the club, and the sessions are added when the club records it paid.
+        """
+        import stripe
+        from django.http import Http404
+
+        from billing import bundles, payments
+        from billing.models import BillingPolicy
+        from classes.booking import BookingError
+        org = member.organisation
+        if not org.has_feature('billing'):
+            raise Http404
+        policy = get_object_or_404(BillingPolicy, pk=request.POST.get('policy_id'), organisation=org, is_active=True,
+                                   pricing_model=BillingPolicy.PricingModel.BUNDLE)
+        if not policy.member_selectable and member.billing_policy_id != policy.pk:
+            raise Http404
+        plans_url = request.build_absolute_uri(reverse('portal_plans', kwargs={'token': token}))
+        try:
+            if member.billing_policy_id != policy.pk:
+                from members.family import FamilyPlanFull, assign_plan
+                try:
+                    assign_plan(member, policy)
+                except FamilyPlanFull as e:
+                    raise BookingError(str(e))
+            bundle = bundles.unpaid_purchase(member, policy) or bundles.buy(member, policy)
+            if bundle.invoice is None:   # a free bundle: ready now
+                messages.success(request, f'{policy.name} added: you have {bundle.sessions} more sessions to book with.')
+            elif payments.stripe_keys(org) is not None:
+                try:
+                    url = payments.start_checkout(bundle.invoice, success_url=f'{plans_url}?bought=1', cancel_url=plans_url)
+                except (stripe.error.StripeError, ValueError):
+                    raise BookingError('We couldn\'t start the payment. Please try again, or contact the club.')
+                return redirect(url, permanent=False)
+            else:
+                messages.success(request, f'We\'ve added an invoice for £{bundle.price} for {policy.name}. Your '
+                                          f'sessions are added when {org.name} has your payment.')
+        except BookingError as e:
+            messages.error(request, str(e))
+        return redirect('portal_plans', token=token)
 
 
 class PortalCodeOfConductView(View):

@@ -18,6 +18,16 @@ class BookingError(Exception):
     """A booking action that isn't allowed; the message is shown to the member."""
 
 
+BUNDLE_NO_ENROL = ('Your plan is a session bundle, so book {cls}\'s sessions one at a time: each one you book '
+                   'uses a session from your bundle.')
+
+
+def on_bundle(member):
+    """Whether the member's plan is a session bundle (billing/bundles.py): each session booked uses one."""
+    policy = member.billing_policy
+    return bool(policy and policy.is_bundle)
+
+
 # How long a single session held for an unpaid checkout is kept before it's released. Stripe's
 # checkout page is set to expire a little sooner than this, so it can't be paid after release.
 PAYMENT_HOLD_MINUTES = 35
@@ -314,6 +324,8 @@ def enrol(member, cls):
     if needs_plan(member):
         raise BookingError(f'Choose a plan before you enrol in {cls.name}. Without a plan you can still book '
                            f'single sessions, one at a time.')
+    if on_bundle(member):
+        raise BookingError(BUNDLE_NO_ENROL.format(cls=cls.name))
     with transaction.atomic():
         existing = ClassMember.objects.select_for_update().filter(assigned_class=cls, member=member).first()
         if existing and existing.auto_enrol:
@@ -413,6 +425,14 @@ def book_session(member, session):
             extra = pay_first = True   # past the plan's limit: an extra session, paid for now
         if not pay_first:
             booking = SessionBooking.objects.create(session=session, member=member)
+            if on_bundle(member):
+                from billing.bundles import NoSessionsLeft, take
+                try:
+                    take(member, session)
+                except NoSessionsLeft:
+                    raise BookingError(
+                        'You\'ve no sessions left in your bundle for that date. Buy another bundle on your '
+                        'Plan page to book it.')
         else:
             day = _date_text(session.date)
             invoice = Invoice(
@@ -466,7 +486,10 @@ def cancel_session_booking(member, session):
     if booking is None:
         raise BookingError('You\'re not booked onto that session.')
     paid_invoice = booking.invoice if booking.invoice and booking.invoice.status == 'paid' else None
-    booking.delete()
+    with transaction.atomic():
+        booking.delete()
+        from billing.bundles import booking_cancelled
+        booking_cancelled(member, session)   # back in the wallet, if the bundle allows it
     cls = session.assigned_class
     _notify(member, 'session_booking_cancelled', *session_email(session))
     return paid_invoice
